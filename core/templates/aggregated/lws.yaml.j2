@@ -193,6 +193,8 @@ spec:
                   --data-parallel-multi-port-external-lb \
                   --data-parallel-start-rank $(( ${LWS_WORKER_INDEX:-0} * {{ data_parallel_size_local | default(data_parallelism) }} )) \
 {% endif %}{% if (pipeline_parallel_size or 0) > 1 %}                  --pipeline-parallel-size {{ pipeline_parallel_size }} \
+{% endif %}{% if context_parallel_size and context_parallel_size > 1 %}                  --context-parallel-size {{ context_parallel_size }} \
+{% endif %}{% if prefill_context_parallel_size and prefill_context_parallel_size > 1 %}                  --prefill-context-parallel-size {{ prefill_context_parallel_size }} \
 {% endif %}{% if block_size %}                  --block-size {{ block_size }} \
 {% endif %}
 {% if max_model_len %}                  --max-model-len {{ max_model_len }} \

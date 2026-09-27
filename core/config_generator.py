@@ -65,6 +65,8 @@ class TestConfig:
     dtype: Optional[str] = None  # None = vLLM auto-detects
     kv_cache_dtype: Optional[str] = None  # None = auto
     pipeline_parallel_size: Optional[int] = None  # None = 1 (default)
+    context_parallel_size: Optional[int] = None  # None = disabled (decode only)
+    prefill_context_parallel_size: Optional[int] = None  # None = disabled (prefill only)
     block_size: int = 16  # KV cache block size (auto-tuned from ISL+OSL)
     trust_remote_code: bool = True
     disable_log_requests: bool = True

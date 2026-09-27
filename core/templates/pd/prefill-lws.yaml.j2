@@ -210,6 +210,7 @@ spec:
                   --data-parallel-supervisor-port=8208 \
                   --data-parallel-start-rank $(( ${LWS_WORKER_INDEX:-0} * DP_SIZE_LOCAL )) \
 {% endif %}{% if pipeline_parallel_size %}                  --pipeline-parallel-size {{ pipeline_parallel_size }} \
+{% endif %}{% if prefill_context_parallel_size and prefill_context_parallel_size > 1 %}                  --prefill-context-parallel-size {{ prefill_context_parallel_size }} \
 {% endif %}{% if block_size %}                  --block-size {{ block_size }} \
 {% endif %}
                   --gpu-memory-utilization {{ prefill_gpu_memory_utilization or 0.80 }} \

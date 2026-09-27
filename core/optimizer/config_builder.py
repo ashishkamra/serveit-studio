@@ -603,6 +603,8 @@ class ConfigBuilderMixin:
             'dtype': 'dtype',
             'kv_cache_dtype': 'kv_cache_dtype',
             'pipeline_parallel_size': 'pipeline_parallel_size',
+            'context_parallel_size': 'context_parallel_size',
+            'prefill_context_parallel_size': 'prefill_context_parallel_size',
             'tool_call_parser': 'tool_call_parser',
             'block_size': 'block_size',
             'reasoning_parser': 'reasoning_parser',
@@ -628,9 +630,9 @@ class ConfigBuilderMixin:
                 setattr(cfg, attr, None)
             elif setting.get('mode') == 'custom' and setting.get('value') is not None:
                 val = setting['value']
-                if attr in ('max_model_len', 'max_num_seqs', 'max_num_batched_tokens', 'pipeline_parallel_size', 'block_size',
-                            'cpu_offload_gb', 'weight_cpu_offload_gb', 'http_timeout_keep_alive', 'prefix_cache_retention',
-                            'speculative_num_tokens'):
+                if attr in ('max_model_len', 'max_num_seqs', 'max_num_batched_tokens', 'pipeline_parallel_size', 'context_parallel_size',
+                            'prefill_context_parallel_size', 'block_size', 'cpu_offload_gb', 'weight_cpu_offload_gb', 'http_timeout_keep_alive',
+                            'prefix_cache_retention', 'speculative_num_tokens'):
                     val = int(val)
                 elif attr == 'gpu_memory_utilization':
                     val = float(val)
@@ -720,6 +722,8 @@ class ConfigBuilderMixin:
             '--max-num-seqs': ('max_num_seqs', int),
             '--max-num-batched-tokens': ('max_num_batched_tokens', int),
             '--pipeline-parallel-size': ('pipeline_parallel_size', int),
+            '--context-parallel-size': ('context_parallel_size', int),
+            '--prefill-context-parallel-size': ('prefill_context_parallel_size', int),
             '--gpu-memory-utilization': ('gpu_memory_utilization', float),
             '--dtype': ('dtype', str),
             '--kv-cache-dtype': ('kv_cache_dtype', str),
