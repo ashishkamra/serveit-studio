@@ -67,6 +67,7 @@ class TestConfig:
     pipeline_parallel_size: Optional[int] = None  # None = 1 (default)
     context_parallel_size: Optional[int] = None  # None = disabled (decode only)
     prefill_context_parallel_size: Optional[int] = None  # None = disabled (prefill only)
+    override_generation_config: Optional[str] = None  # JSON config to override generation parameters
     block_size: int = 16  # KV cache block size (auto-tuned from ISL+OSL)
     trust_remote_code: bool = True
     disable_log_requests: bool = True
