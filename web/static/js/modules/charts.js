@@ -1,5 +1,25 @@
 // charts.js — Plotly chart rendering for all report visualizations
 
+// Keep recommendation ranking in sync with dlRecommendationScore in report-download.js.
+function recommendationMetric(value) {
+    return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function recommendationScore(cfg, category) {
+    if (cfg.quality === 'discard' || cfg.recommendation_eligible === false) return null;
+    const ttft = recommendationMetric(cfg.ttft_p90 ?? cfg.ttft);
+    const itl = recommendationMetric(cfg.itl_p90 ?? cfg.itl);
+    const tput = recommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
+    const gpus = recommendationMetric(cfg.gpus ?? cfg.total_gpus);
+    let score = null;
+    if (category === 'lowest_ttft' && ttft != null) score = -ttft;
+    else if (category === 'lowest_itl' && itl != null) score = -itl;
+    else if (category === 'highest_tput') score = tput;
+    else if (category === 'most_efficient' && tput != null && gpus > 0) score = tput / gpus;
+    else if (category === 'balanced' && ttft != null && tput > 0) score = -ttft / tput;
+    return Number.isFinite(score) ? score : null;
+}
+
 function renderCharts(data, runId) {
     var content = document.getElementById('charts-content');
     try { _renderChartsImpl(data, runId, content); } catch(e) {
@@ -65,8 +85,8 @@ function _renderChartsImpl(data, runId, content) {
 
         // Metrics line
         h += '<div style="display:flex;gap:12px;font-size:0.85em;color:#475569;margin-bottom:4px;flex-wrap:wrap;">';
-        if (opts.tput != null) h += '<span>Throughput: <strong>' + (typeof opts.tput === 'number' ? opts.tput.toFixed(2) + ' req/s' : opts.tput) + '</strong></span>';
-        if (opts.gpus) h += '<span>GPUs: <strong>' + opts.gpus + '</strong></span>';
+        h += '<span>Mean throughput: <strong>' + (recommendationMetric(opts.tput) != null ? opts.tput.toFixed(2) + ' req/s' : 'Unknown') + '</strong></span>';
+        h += '<span>GPUs: <strong>' + (recommendationMetric(opts.gpus) ?? 'Unknown') + '</strong></span>';
         if (opts.conc) h += '<span style="color:#0ea5e9;font-weight:600;">' + opts.conc + '</span>';
         h += '</div>';
         if (opts.vllm_tps != null) {
@@ -79,14 +99,19 @@ function _renderChartsImpl(data, runId, content) {
         if (opts.extraInfo) h += '<div style="font-size:0.8em;color:#7c3aed;margin-top:2px;">' + opts.extraInfo + '</div>';
 
         // Percentile table
-        var _fmtE2e = function(v) { return v != null ? (v >= 1000 ? (v/1000).toFixed(1) + ' s' : Math.round(v) + ' ms') : '-'; };
+        var _fmtE2e = function(v) { return recommendationMetric(v) != null ? (v >= 1000 ? (v/1000).toFixed(1) + ' s' : Math.round(v) + ' ms') : 'Unknown'; };
         h += '<table style="width:100%;font-size:0.8em;border-collapse:collapse;margin-top:6px;">';
         h += '<tr style="color:#94a3b8;font-weight:600;"><td></td><td>TTFT</td><td>E2E</td><td>ITL</td></tr>';
-        if (opts.ttft_p50 != null) h += '<tr><td style="font-weight:600;color:#94a3b8;">P50</td><td style="color:#64748b;">' + Math.round(opts.ttft_p50).toLocaleString() + ' ms</td><td style="color:#64748b;">' + _fmtE2e(opts.e2e_p50) + '</td><td style="color:#64748b;">' + (opts.itl_p50 ? parseFloat(opts.itl_p50).toFixed(2) + ' ms' : '-') + '</td></tr>';
-        h += '<tr><td style="font-weight:600;color:#475569;">P90</td><td style="font-weight:700;color:#1e293b;">' + (opts.ttft_p90 != null ? Math.round(opts.ttft_p90).toLocaleString() + ' ms' : '-') + '</td><td>' + _fmtE2e(opts.e2e_p90) + '</td><td>' + (opts.itl_p90 ? parseFloat(opts.itl_p90).toFixed(2) + ' ms' : '-') + '</td></tr>';
-        if (opts.ttft_p95) h += '<tr><td style="font-weight:600;color:#475569;">P95</td><td style="color:#64748b;">' + Math.round(opts.ttft_p95).toLocaleString() + ' ms</td><td style="color:#64748b;">' + _fmtE2e(opts.e2e_p95) + '</td><td>' + (opts.itl_p95 ? parseFloat(opts.itl_p95).toFixed(2) + ' ms' : '-') + '</td></tr>';
-        if (opts.ttft_p99) h += '<tr><td style="font-weight:600;color:#475569;">P99</td><td style="color:#64748b;">' + Math.round(opts.ttft_p99).toLocaleString() + ' ms</td><td style="color:#64748b;">' + _fmtE2e(opts.e2e_p99) + '</td><td>' + (opts.itl_p99 ? parseFloat(opts.itl_p99).toFixed(2) + ' ms' : '-') + '</td></tr>';
+        ['p50', 'p90', 'p95', 'p99'].forEach(function(p) {
+            const ttft = recommendationMetric(opts['ttft_' + p]);
+            const itl = recommendationMetric(opts['itl_' + p]);
+            h += '<tr><td style="font-weight:600;color:#475569;">' + p.toUpperCase() + '</td><td>' +
+                (ttft != null ? Math.round(ttft).toLocaleString() + ' ms' : 'Unknown') + '</td><td>' +
+                _fmtE2e(opts['e2e_' + p]) + '</td><td>' + (itl != null ? itl.toFixed(2) + ' ms' : 'Unknown') + '</td></tr>';
+        });
         h += '</table>';
+        const escapeSource = v => String(v ?? 'Unknown').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        h += '<div style="font-size:0.75em;color:#64748b;margin-top:6px;">Source run: ' + escapeSource(opts.runId) + '; test: ' + escapeSource(opts.testId) + '</div>';
 
         // Action buttons
         if (opts.recId || (opts.manifests && opts.manifests.length)) {
@@ -176,14 +201,19 @@ function _renderChartsImpl(data, runId, content) {
 
     // ============================================================
     // Store recommendation configs for single test re-run
-    window._recConfigs = {};
+    window._recConfigs = window._recConfigs || {};
+    // Preserve other open reports; never bind an action to a category or display name.
+    function recActionId(cfg) {
+        if (runId == null || !cfg.test_id) return null;
+        return 'rec-' + encodeURIComponent(JSON.stringify([String(runId), cfg.test_id])).replace(/'/g, '%27');
+    }
 
     // RECOMMENDATION — the bottom line
     // ============================================================
-    if (rec && rec.recommendations && Object.keys(rec.recommendations).length) {
+    if (rec && rec.best_by_percentile && Object.keys(rec.best_by_percentile).length) {
         html += '<div class="chart-card" style="border: 2px solid #10b981; border-left: 6px solid #10b981;">';
         html += '<div class="chart-card-header" style="background: linear-gradient(135deg, #059669, #10b981); color: white; font-size: 1.1em; font-weight: 800;">Deployment Recommendation &mdash; User-Defined Workload</div>';
-        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Best configurations found at the user-configured concurrency. These results reflect peak-load performance at the workload settings you defined.</div>';
+        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Top tested configurations by category, ranked using P90 latency and mean throughput. Each card shows one test at its actual concurrency; these rankings do not verify all SLOs.</div>';
         html += '<div class="chart-card-body" style="padding: 24px;">';
 
         // Recommendation cards — one per category, best across ALL architectures
@@ -195,7 +225,7 @@ function _renderChartsImpl(data, runId, content) {
             { key: 'highest_tput', label: 'Highest Throughput', desc: 'Maximum requests per second', color: '#f59e0b', icon: '&#9889;' },
             { key: 'most_efficient', label: 'Most Efficient', desc: 'Best throughput per GPU — cost optimized', color: '#8b5cf6', icon: '&#128176;' },
         ];
-        const fallbackTs = (rec.recommendations.response_time || rec.recommendations.throughput || {}).config?.test_settings;
+        const fallbackTs = ((rec.recommendations || {}).response_time || (rec.recommendations || {}).throughput || {}).config?.test_settings;
         const archColors = { pd: '#2563eb', aggregated: '#059669', ep: '#7c3aed' };
 
         // Find global best per category across all architectures
@@ -205,17 +235,11 @@ function _renderChartsImpl(data, runId, content) {
             ['pd', 'aggregated', 'ep'].forEach(archKey => {
                 const p90Data = (bp.p90 || {})[archKey];
                 if (!p90Data) return;
-                const isNew = p90Data.balanced || p90Data.lowest_ttft || p90Data.highest_tput;
+                const isNew = selTypes.some(s => Object.prototype.hasOwnProperty.call(p90Data, s.key));
                 const cfg = isNew ? p90Data[sel.key] : (sel.key === 'balanced' ? p90Data : null);
                 if (!cfg) return;
-                const ttft = cfg.ttft_p90 || cfg.ttft || 1e9;
-                const tput = cfg.throughput_mean || cfg.throughput || cfg.throughput_p90 || 0;
-                const gpus = cfg.gpus || cfg.total_gpus || 1;
-                let score;
-                if (sel.key === 'lowest_ttft') score = -ttft;
-                else if (sel.key === 'highest_tput') score = tput;
-                else if (sel.key === 'most_efficient') score = tput / gpus;
-                else score = -ttft / Math.max(tput, 0.001);
+                const score = recommendationScore(cfg, sel.key);
+                if (score == null) return;
                 if (!best || score > best.score) {
                     best = { cfg, score, archKey };
                     bestArch = archKey;
@@ -253,16 +277,11 @@ function _renderChartsImpl(data, runId, content) {
                     deploy = cfg.config_name;
                 }
 
-                const recId = 'rec-' + archKey + '-' + sel.key;
-                window._recConfigs[recId] = { ...cfg, architecture: archKey, model: rec.model, image: (data.run_config || {}).image, test_settings: cfg.test_settings || fallbackTs, epp_config: cfg.epp_config };
+                const recId = recActionId(cfg);
+                if (recId) window._recConfigs[recId] = { ...cfg, architecture: archKey, model: rec.model, image: (data.run_config || {}).image, test_settings: cfg.test_settings || fallbackTs, epp_config: cfg.epp_config };
 
-                const gpus = cfg.gpus || cfg.total_gpus;
-                const tputMean = cfg.throughput_mean || cfg.throughput || cfg.throughput_p90 || '-';
-
-                // Extract percentile data from best_by_percentile
-                const _p90d = ((bp.p90 || {})[archKey] || {})[sel.key] || (bp.p90 || {})[archKey] || {};
-                const _p95d = ((bp.p95 || {})[archKey] || {})[sel.key] || (bp.p95 || {})[archKey] || {};
-                const _p99d = ((bp.p99 || {})[archKey] || {})[sel.key] || (bp.p99 || {})[archKey] || {};
+                const gpus = cfg.gpus ?? cfg.total_gpus;
+                const tputMean = cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90;
 
                 const recTestId = cfg.test_id || testIdLookup[cfg.config_name] || cfg.config_name;
                 const recManifests = manifestLookup[recTestId] || cfg.manifest_types || [];
@@ -278,26 +297,19 @@ function _renderChartsImpl(data, runId, content) {
                 const _outputTps = _mj.output_tps_mean || _resEntry.output_tps_mean || null;
                 if (_resEntry.cache_hit_pct != null) badges.push({ text: _resEntry.cache_hit_pct + '% cache hit', bg: 'rgba(255,255,255,0.2)', color: 'white' });
 
-                // P50 data — not in best_by_percentile, pull from raw metrics_json
-                const _p50mj = _mj;
-                const _p50d = { ttft_p50: _p50mj.ttft_p50, e2e_p50: _p50mj.e2e_latency_p50 != null ? _p50mj.e2e_latency_p50 * 1000 : null, itl_p50: _p50mj.itl_p50 };
-
-                const userConc = rec.workload ? 'c=' + rec.workload.users : '';
+                // All percentile rows belong to cfg, not the independently ranked tail winners.
+                const userConc = 'c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
                 html += _buildRecCard({
                     label: sel.label, icon: sel.icon, desc: sel.desc, color: sel.color,
                     archKey: archKey, deploy: deploy,
-                    tput: tputMean, gpus: gpus || '?', conc: userConc,
+                    tput: tputMean, gpus: gpus, conc: userConc,
                     vllm_tps: _vllmTps > 0 ? _vllmTps : null,
-                    ttft_p50: _p50d.ttft || _p50d.ttft_p50,
-                    ttft_p90: _p90d.ttft || _p90d.ttft_p90,
-                    ttft_p95: _p95d.ttft || _p95d.ttft_p95,
-                    ttft_p99: _p99d.ttft || _p99d.ttft_p99,
-                    e2e_p50: _p50d.e2e_p50, e2e_p90: _p90d.e2e_p90, e2e_p95: _p95d.e2e_p95, e2e_p99: _p99d.e2e_p99,
-                    itl_p50: _p50d.itl || _p50d.itl_p50,
-                    itl_p90: _p90d.itl || _p90d.itl_p90,
-                    itl_p95: _p95d.itl || _p95d.itl_p95,
-                    itl_p99: _p99d.itl || _p99d.itl_p99,
-                    recId: recId, testId: recTestId,
+                    ttft_p50: cfg.ttft_p50, ttft_p90: cfg.ttft_p90 ?? cfg.ttft,
+                    ttft_p95: cfg.ttft_p95, ttft_p99: cfg.ttft_p99,
+                    e2e_p50: cfg.e2e_p50, e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
+                    itl_p50: cfg.itl_p50, itl_p90: cfg.itl_p90 ?? cfg.itl,
+                    itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
+                    recId: recId, testId: cfg.test_id,
                     manifests: recManifests, runId: runId,
                     extraBadges: badges.length ? badges : null
                 });
@@ -333,8 +345,8 @@ function _renderChartsImpl(data, runId, content) {
         }
 
         // Grab test_settings from the first available P90 recommendation for EPP cards
-        const _baseTestSettings = (rec.recommendations.response_time || rec.recommendations.throughput || {}).config?.test_settings || {};
-        const _baseEppConfig = (rec.recommendations.response_time || rec.recommendations.throughput || {}).config?.epp_config || null;
+        const _baseTestSettings = ((rec.recommendations || {}).response_time || (rec.recommendations || {}).throughput || {}).config?.test_settings || {};
+        const _baseEppConfig = ((rec.recommendations || {}).response_time || (rec.recommendations || {}).throughput || {}).config?.epp_config || null;
 
 
         html += '</div></div>';
@@ -346,7 +358,7 @@ function _renderChartsImpl(data, runId, content) {
     if (calBest) {
         html += '<div class="chart-card" style="margin-top:20px; border:2px solid #0ea5e9; border-left:6px solid #0ea5e9;">';
         html += '<div class="chart-card-header" style="background:linear-gradient(135deg,#0ea5e9,#06b6d4); color:white; font-size:1.1em; font-weight:800;">Deployment Recommendation &mdash; Calibrated Load</div>';
-        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Performance at sustainable production load — calibrated concurrency where queue wait is reasonable. These results reflect realistic production conditions.</div>';
+        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Measured performance at tested calibrated concurrency. These results are not a production capacity or SLO guarantee.</div>';
         html += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; padding:16px 20px;">`;
 
         const calTypes = [
@@ -379,11 +391,11 @@ function _renderChartsImpl(data, runId, content) {
                 deploy = cfg.name || cfg.config_name;
             }
 
-            const concStr = cfg.concurrency ? `c=${cfg.concurrency}` : '';
-            const tput = cfg.throughput_mean || cfg.throughput_p90 || '-';
+            const concStr = 'c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
+            const tput = cfg.throughput_mean ?? cfg.throughput_p90;
 
-            const calRecId = 'cal-' + archKey + '-' + sel.key;
-            window._recConfigs[calRecId] = { ...cfg, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image, test_settings: cfg.test_settings };
+            const calRecId = recActionId(cfg);
+            if (calRecId) window._recConfigs[calRecId] = { ...cfg, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image, test_settings: cfg.test_settings };
 
             const calTestId = cfg.test_id || testIdLookup[cfg.config_name] || cfg.config_name;
             const calManifests = manifestLookup[calTestId] || cfg.manifest_types || [];
@@ -402,13 +414,13 @@ function _renderChartsImpl(data, runId, content) {
             html += _buildRecCard({
                 label: sel.label, icon: sel.icon, desc: sel.desc, color: sel.color,
                 archKey: archKey, deploy: deploy,
-                tput: tput, gpus: cfg.gpus || '?',
+                tput: tput, gpus: cfg.gpus,
                 conc: concStr,
                 vllm_tps: _calVllmTps > 0 ? _calVllmTps : null,
-                ttft_p50: cfg.ttft_p50 || _calMj.ttft_p50, ttft_p90: cfg.ttft_p90, ttft_p95: cfg.ttft_p95, ttft_p99: cfg.ttft_p99,
-                e2e_p50: cfg.e2e_p50 || (_calMj.e2e_latency_p50 != null ? _calMj.e2e_latency_p50 * 1000 : null), e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
-                itl_p50: cfg.itl_p50 || _calMj.itl_p50, itl_p90: cfg.itl_p90, itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
-                recId: calRecId, testId: calTestId,
+                ttft_p50: cfg.ttft_p50, ttft_p90: cfg.ttft_p90, ttft_p95: cfg.ttft_p95, ttft_p99: cfg.ttft_p99,
+                e2e_p50: cfg.e2e_p50, e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
+                itl_p50: cfg.itl_p50, itl_p90: cfg.itl_p90, itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
+                recId: calRecId, testId: cfg.test_id,
                 manifests: calManifests, runId: runId,
                 extraBadges: badges.length ? badges : null
             });
@@ -454,12 +466,12 @@ function _renderChartsImpl(data, runId, content) {
                 deploy = cfg.name || cfg.config_name;
             }
 
-            const concStr = cfg.concurrency ? `c=${cfg.concurrency}` : '';
-            const tput = cfg.throughput_mean || cfg.throughput_p90 || '-';
+            const concStr = 'c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
+            const tput = cfg.throughput_mean ?? cfg.throughput_p90;
             const cacheStr = cfg.cache_hit_pct != null ? cfg.cache_hit_pct + '% cache hit' : '';
 
-            const cacheRecId = 'cache-' + archKey + '-' + sel.key;
-            window._recConfigs[cacheRecId] = { ...cfg, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image };
+            const cacheRecId = recActionId(cfg);
+            if (cacheRecId) window._recConfigs[cacheRecId] = { ...cfg, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image };
 
             const cacheTestId = cfg.test_id || cfg.config_name;
             const cacheManifests = manifestLookup[cacheTestId] || [];
@@ -476,13 +488,13 @@ function _renderChartsImpl(data, runId, content) {
             html += _buildRecCard({
                 label: sel.label, icon: sel.icon, desc: sel.desc, color: sel.color,
                 archKey: archKey, deploy: deploy,
-                tput: tput, gpus: cfg.gpus || '?',
+                tput: tput, gpus: cfg.gpus,
                 conc: concStr,
                 vllm_tps: cfg.vllm_tps || (_cacheVllmTps > 0 ? _cacheVllmTps : null),
                 ttft_p50: cfg.ttft_p50, ttft_p90: cfg.ttft_p90, ttft_p95: cfg.ttft_p95, ttft_p99: cfg.ttft_p99,
                 e2e_p50: cfg.e2e_p50, e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
                 itl_p50: cfg.itl_p50, itl_p90: cfg.itl_p90, itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
-                recId: cacheRecId, testId: cacheTestId,
+                recId: cacheRecId, testId: cfg.test_id,
                 manifests: cacheManifests, runId: runId,
                 extraBadges: badges.length ? badges : null
             });
@@ -590,41 +602,45 @@ function _renderChartsImpl(data, runId, content) {
             const a = hasAgg ? aggBase.percentiles : null;
 
             html += `<div class="chart-card"><div class="chart-card-header">Percentile Breakdown: ${primaryArch} vs Aggregated</div>`;
-            html += `<div style="padding:10px 20px 4px; color:#4b5563; font-size:0.9em;">Full percentile distribution (P50 through P99) for TTFT, ITL, and Throughput — comparing the best ${primaryArch} configuration against the Aggregated baseline using the same GPU budget. Green-highlighted P90 values indicate the winner for each metric.</div>`;
+            html += `<div style="padding:10px 20px 4px; color:#4b5563; font-size:0.9em;">Latency percentiles (P50 through P99) and mean throughput for the selected ${primaryArch} configuration and Aggregated baseline. Green-highlighted P90 latency values indicate the lower measured value, not SLO feasibility.</div>`;
             html += '<div class="chart-card-body" style="padding:0;">';
             html += '<table class="results-table">';
 
             html += '<tr><th>Configuration</th><th>Metric</th><th>P50</th><th>P90</th><th>P95</th><th>P99</th></tr>';
 
-            const betterLower = (v1, v2) => v1 != null && v2 != null && v1 < v2;
-            const betterHigher = (v1, v2) => v1 != null && v2 != null && v1 > v2;
+            const betterLower = (v1, v2) => recommendationMetric(v1) != null && recommendationMetric(v2) != null && v1 < v2;
 
             const metricDefs = [
                 { name: 'TTFT (ms)', key: 'ttft', lowerBetter: true },
                 { name: 'ITL (ms)', key: 'itl', lowerBetter: true },
-                { name: 'Throughput (req/s)', key: 'throughput', lowerBetter: false },
+                { name: 'Mean throughput (req/s)', key: 'throughput', lowerBetter: false },
             ];
 
-            const entries = [{label: primaryArch, pctl: p}];
-            if (a) entries.push({label: 'Aggregated', pctl: a});
+            const entries = [{label: primaryArch, pctl: p, cfg: primaryRec.config}];
+            if (a) entries.push({label: 'Aggregated', pctl: a, cfg: aggBase});
 
-            entries.forEach(({label, pctl}, idx) => {
+            entries.forEach(({label, pctl, cfg}, idx) => {
                 metricDefs.forEach((m, mi) => {
-                    const d = pctl[m.key];
+                    const d = pctl[m.key] || {};
+                    if (m.key === 'throughput') {
+                        const mean = recommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
+                        html += `<tr><td style="color:#64748b;">${m.name}</td><td colspan="4">${mean != null ? mean.toFixed(2) : 'Unknown'} (mean, not a percentile)</td></tr>`;
+                        return;
+                    }
                     const borderStyle = mi === 0 && idx > 0 ? ' border-top:2px solid #cbd5e1;' : '';
                     let p90Style = '';
                     if (a) {
-                        const other = idx === 0 ? a[m.key] : p[m.key];
-                        const wins = m.lowerBetter ? betterLower(d.p90, other.p90) : betterHigher(d.p90, other.p90);
+                        const other = (idx === 0 ? a[m.key] : p[m.key]) || {};
+                        const wins = betterLower(d.p90, other.p90);
                         if (wins) p90Style = 'color:#10b981; font-weight:700;';
                     }
                     html += '<tr>';
                     if (mi === 0) html += `<td rowspan="3" style="vertical-align:middle; font-weight:700;${borderStyle}">${label}</td>`;
                     html += `<td style="color:#64748b;${borderStyle}">${m.name}</td>`;
-                    html += `<td style="${borderStyle}">${d.p50 ?? '-'}</td>`;
-                    html += `<td style="${p90Style}${borderStyle}">${d.p90 ?? '-'}</td>`;
-                    html += `<td style="${borderStyle}">${d.p95 ?? '-'}</td>`;
-                    html += `<td style="${borderStyle}">${d.p99 ?? '-'}</td>`;
+                    html += `<td style="${borderStyle}">${recommendationMetric(d.p50) ?? 'Unknown'}</td>`;
+                    html += `<td style="${p90Style}${borderStyle}">${recommendationMetric(d.p90) ?? 'Unknown'}</td>`;
+                    html += `<td style="${borderStyle}">${recommendationMetric(d.p95) ?? 'Unknown'}</td>`;
+                    html += `<td style="${borderStyle}">${recommendationMetric(d.p99) ?? 'Unknown'}</td>`;
                     html += '</tr>';
                 });
             });
@@ -635,6 +651,7 @@ function _renderChartsImpl(data, runId, content) {
 
     // --- Summary cards ---
     const best = summary.best_configs || {};
+    const recStat = (v, digits, unit = '') => recommendationMetric(v) != null ? v.toFixed(digits) + unit : 'Unknown';
     html += '<div class="charts-summary">';
     html += statCard(summary.successful_tests, 'Successful Tests');
     if (summary.discarded_tests > 0) {
@@ -642,20 +659,20 @@ function _renderChartsImpl(data, runId, content) {
     }
     if (best.lowest_latency) {
         const ll = best.lowest_latency;
-        html += statCard(ll.ttft_p90.toFixed(1) + ' ms', 'Best TTFT P90', ll.name);
-        if (ll.ttft_p95) html += statCard(ll.ttft_p95.toFixed(1) + ' ms', 'Best TTFT P95', ll.name);
-        if (ll.ttft_p99) html += statCard(ll.ttft_p99.toFixed(1) + ' ms', 'Best TTFT P99', ll.name);
+        html += statCard(recStat(ll.ttft_p90, 1, ' ms'), 'Best TTFT P90', ll.name);
+        html += statCard(recStat(ll.ttft_p95, 1, ' ms'), 'TTFT P95 (P90-selected test)', ll.name);
+        html += statCard(recStat(ll.ttft_p99, 1, ' ms'), 'TTFT P99 (P90-selected test)', ll.name);
     }
     if (best.lowest_itl) {
-        html += statCard(best.lowest_itl.itl_p90.toFixed(2) + ' ms', 'Best ITL P90', best.lowest_itl.name);
+        html += statCard(recStat(best.lowest_itl.itl_p90, 2, ' ms'), 'Best ITL P90', best.lowest_itl.name);
     }
     if (best.highest_throughput) {
         const ht = best.highest_throughput;
-        const htVal = ht.throughput_mean || ht.throughput_p90;
-        html += statCard(htVal.toFixed(2) + ' req/s', 'Best Throughput Mean', ht.name);
+        const htVal = ht.throughput_mean ?? ht.throughput_p90;
+        html += statCard(recStat(htVal, 2, ' req/s'), 'Best Throughput Mean', ht.name);
     }
     if (best.most_efficient)
-        html += statCard(best.most_efficient.efficiency.toFixed(3), 'Best Efficiency (req/s/GPU)', best.most_efficient.name);
+        html += statCard(recStat(best.most_efficient.efficiency, 3), 'Best Efficiency (req/s/GPU)', best.most_efficient.name);
     html += '</div>';
 
     // Flush recommendation part 2 (percentile breakdown + summary cards)
@@ -4614,4 +4631,3 @@ function _renderChartsImpl(data, runId, content) {
         });
     }, 100);
 }
-

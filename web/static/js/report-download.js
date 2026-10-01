@@ -48,9 +48,9 @@ async function downloadHTMLReport(runId, data) {
 function buildFullReport(runId, data, charts, rec, summary, best, allRes, hasPD, hasVLLM) {
     let secRec = buildRecSection(runId, data, rec, summary, best, allRes);
     // Append calibrated load recommendations to the Recommendation tab
-    const calRecCards = buildCalRecCards(data);
+    const calRecCards = buildCalRecCards(data, runId);
     if (calRecCards) secRec += calRecCards;
-    const cacheRecCards = buildCacheRecCards(data);
+    const cacheRecCards = buildCacheRecCards(data, runId);
     if (cacheRecCards) secRec += cacheRecCards;
     // Stat cards and percentile breakdown go at the very bottom of the rec tab
     secRec += buildRecFooter(rec, summary, best);
@@ -149,6 +149,41 @@ function dlPctChange(val, base, lowerBetter) {
 }
 
 // ── Recommendation Tab ──────────────────────────────────────────────────────
+// Keep these rules in sync with recommendationScore in modules/charts.js.
+function dlRecommendationMetric(value) {
+    return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function dlRecommendationScore(cfg, category) {
+    if (cfg.quality === 'discard' || cfg.recommendation_eligible === false) return null;
+    const ttft = dlRecommendationMetric(cfg.ttft_p90 ?? cfg.ttft);
+    const itl = dlRecommendationMetric(cfg.itl_p90 ?? cfg.itl);
+    const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
+    const gpus = dlRecommendationMetric(cfg.gpus ?? cfg.total_gpus);
+    let score = null;
+    if (category === 'lowest_ttft' && ttft != null) score = -ttft;
+    else if (category === 'lowest_itl' && itl != null) score = -itl;
+    else if (category === 'highest_tput') score = tput;
+    else if (category === 'most_efficient' && tput != null && gpus > 0) score = tput / gpus;
+    else if (category === 'balanced' && ttft != null && tput > 0) score = -ttft / tput;
+    return Number.isFinite(score) ? score : null;
+}
+
+function dlRecommendationTable(cfg, runId) {
+    const fmtE2e = v => dlRecommendationMetric(v) != null ? (v >= 1000 ? (v/1000).toFixed(1) + ' s' : Math.round(v) + ' ms') : 'Unknown';
+    let s = '<table style="width:100%;font-size:0.8em;border-collapse:collapse;margin-top:6px;">';
+    s += '<tr style="color:#94a3b8;font-weight:600;"><td></td><td>TTFT</td><td>E2E</td><td>ITL</td></tr>';
+    ['p50', 'p90', 'p95', 'p99'].forEach(p => {
+        const ttft = dlRecommendationMetric(cfg['ttft_' + p] ?? (p === 'p90' ? cfg.ttft : null));
+        const itl = dlRecommendationMetric(cfg['itl_' + p] ?? (p === 'p90' ? cfg.itl : null));
+        s += `<tr><td style="font-weight:600;color:#475569;">${p.toUpperCase()}</td><td>${ttft != null ? Math.round(ttft).toLocaleString() + ' ms' : 'Unknown'}</td><td>${fmtE2e(cfg['e2e_' + p])}</td><td>${itl != null ? itl.toFixed(2) + ' ms' : 'Unknown'}</td></tr>`;
+    });
+    s += '</table>';
+    const escapeSource = v => String(v ?? 'Unknown').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    s += `<div style="font-size:0.75em;color:#64748b;margin-top:6px;">Source run: ${escapeSource(runId)}; test: ${escapeSource(cfg.test_id)}</div>`;
+    return s;
+}
+
 function buildRecSection(runId, data, rec, summary, best, allRes) {
     let s = '';
 
@@ -202,16 +237,11 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
             ['pd', 'aggregated', 'ep'].forEach(archKey => {
                 const p90Data = (bp.p90 || {})[archKey];
                 if (!p90Data) return;
-                const cfg = p90Data[sel.key] || (sel.key === 'balanced' ? p90Data : null);
+                const isNew = selTypes.some(s => Object.prototype.hasOwnProperty.call(p90Data, s.key));
+                const cfg = isNew ? p90Data[sel.key] : (sel.key === 'balanced' ? p90Data : null);
                 if (!cfg) return;
-                const ttft = cfg.ttft_p90 || cfg.ttft || 1e9;
-                const tput = cfg.throughput_mean || cfg.throughput || cfg.throughput_p90 || 0;
-                const gpus = cfg.gpus || cfg.total_gpus || 1;
-                let score;
-                if (sel.key === 'lowest_ttft') score = -ttft;
-                else if (sel.key === 'highest_tput') score = tput;
-                else if (sel.key === 'most_efficient') score = tput / gpus;
-                else score = -ttft / Math.max(tput, 0.001);
+                const score = dlRecommendationScore(cfg, sel.key);
+                if (score == null) return;
                 if (!best || score > best.score) best = { cfg, score, archKey };
             });
             if (best) globalBest[sel.key] = best;
@@ -219,7 +249,7 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
 
         s += '<div style="border:2px solid #10b981;border-left:6px solid #10b981;border-radius:10px;margin:20px 0;overflow:hidden;">';
         s += '<div style="background:linear-gradient(135deg,#059669,#10b981);padding:14px 20px;font-size:1.1em;font-weight:800;color:white;">Deployment Recommendation &mdash; User-Defined Workload</div>';
-        s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Best configurations found at the user-configured concurrency. These results reflect peak-load performance at the workload settings you defined.</div>';
+        s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Top tested configurations by category, ranked using P90 latency and mean throughput. Each card shows one test at its actual concurrency; these rankings do not verify all SLOs.</div>';
         s += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;padding:20px;">';
 
         selTypes.forEach(sel => {
@@ -239,12 +269,8 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
                 deploy = cfg.config_name || '';
             }
 
-            const tput = cfg.throughput_mean || cfg.throughput || cfg.throughput_p90 || '-';
-            const gpus = cfg.gpus || cfg.total_gpus || '?';
-
-            const _p90d = ((bp.p90 || {})[archKey] || {})[sel.key] || (bp.p90 || {})[archKey] || {};
-            const _p95d = ((bp.p95 || {})[archKey] || {})[sel.key] || (bp.p95 || {})[archKey] || {};
-            const _p99d = ((bp.p99 || {})[archKey] || {})[sel.key] || (bp.p99 || {})[archKey] || {};
+            const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
+            const gpus = dlRecommendationMetric(cfg.gpus ?? cfg.total_gpus) ?? 'Unknown';
 
             // Card
             s += '<div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);border:2px solid #cbd5e1;">';
@@ -258,10 +284,10 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
             s += '<div style="padding:12px 14px;">';
             s += `<div style="font-size:1.1em;font-weight:800;color:#0f172a;margin-bottom:8px;">${deploy}</div>`;
             s += '<div style="display:flex;gap:12px;font-size:0.85em;color:#475569;margin-bottom:4px;flex-wrap:wrap;">';
-            s += `<span>Throughput: <strong>${typeof tput === 'number' ? tput.toFixed(2) + ' req/s' : tput}</strong></span>`;
+            s += `<span>Mean throughput: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
             s += `<span>GPUs: <strong>${gpus}</strong></span>`;
-            const userConc = rec.workload ? rec.workload.users : null;
-            if (userConc) s += `<span style="color:#0ea5e9;font-weight:600;">c=${userConc}</span>`;
+            const userConc = dlRecommendationMetric(cfg.concurrency) ?? 'Unknown';
+            s += `<span style="color:#0ea5e9;font-weight:600;">c=${userConc}</span>`;
             s += '</div>';
             // vLLM tok/s line
             const _dlResEntry = allRes.find(r => (r.test_id || r.config_name) === (cfg.test_id || cfg.config_name)) || {};
@@ -274,27 +300,15 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
                 s += `<span>vLLM: <strong style="color:#3b82f6;">${Math.round(_dlVllmTps).toLocaleString()} tok/s</strong> <span style="font-size:0.85em;color:#94a3b8;">(computed)</span></span>`;
                 s += '</div>';
             }
-            // Percentile table — P50 from raw metrics (not in best_by_percentile)
-            const _p50d = { ttft_p50: _dlMj.ttft_p50, e2e_p50: _dlMj.e2e_latency_p50 != null ? _dlMj.e2e_latency_p50 * 1000 : null, itl_p50: _dlMj.itl_p50 };
-            s += '<table style="width:100%;font-size:0.8em;border-collapse:collapse;margin-top:6px;">';
-            s += '<tr style="color:#94a3b8;font-weight:600;"><td></td><td>TTFT</td><td>E2E</td><td>ITL</td></tr>';
-            const t50 = _p50d.ttft || _p50d.ttft_p50;
-            const t90 = _p90d.ttft || _p90d.ttft_p90;
-            const t95 = _p95d.ttft || _p95d.ttft_p95;
-            const t99 = _p99d.ttft || _p99d.ttft_p99;
-            const fmtE2e = v => v != null ? (v >= 1000 ? (v/1000).toFixed(1) + ' s' : Math.round(v) + ' ms') : '-';
-            if (t50 != null) s += `<tr><td style="font-weight:600;color:#94a3b8;">P50</td><td style="color:#64748b;">${Math.round(t50).toLocaleString()} ms</td><td style="color:#64748b;">${fmtE2e(_p50d.e2e_p50)}</td><td style="color:#64748b;">${fmtItl(_p50d.itl || _p50d.itl_p50)}</td></tr>`;
-            s += `<tr><td style="font-weight:600;color:#475569;">P90</td><td style="font-weight:700;color:#1e293b;">${t90 != null ? Math.round(t90).toLocaleString() + ' ms' : '-'}</td><td>${fmtE2e(_p90d.e2e_p90)}</td><td>${fmtItl(_p90d.itl || _p90d.itl_p90)}</td></tr>`;
-            if (t95) s += `<tr><td style="font-weight:600;color:#475569;">P95</td><td style="color:#64748b;">${Math.round(t95).toLocaleString()} ms</td><td style="color:#64748b;">${fmtE2e(_p95d.e2e_p95)}</td><td>${fmtItl(_p95d.itl || _p95d.itl_p95)}</td></tr>`;
-            if (t99) s += `<tr><td style="font-weight:600;color:#475569;">P99</td><td style="color:#64748b;">${Math.round(t99).toLocaleString()} ms</td><td style="color:#64748b;">${fmtE2e(_p99d.e2e_p99)}</td><td>${fmtItl(_p99d.itl || _p99d.itl_p99)}</td></tr>`;
-            s += '</table>';
+            // Every metric comes from the selected test, never another percentile's winner.
+            s += dlRecommendationTable(cfg, runId);
             // Manifest links
             const mTypes = cfg.manifest_types || [];
-            if (mTypes.length) {
+            if (mTypes.length && cfg.test_id) {
                 const ml = { lws: 'LWS', prefill: 'Prefill LWS', decode: 'Decode LWS', 'epp-configmap': 'EPP Config' };
                 s += '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #f1f5f9;display:flex;flex-wrap:wrap;gap:4px;">';
                 mTypes.filter(t => !t.includes('service')).forEach(t => {
-                    const tid = cfg.test_id || cfg.config_name || '';
+                    const tid = cfg.test_id;
                     s += `<a href="#" onclick="dlManifest('${tid}','${t}');return false;" style="color:#0ea5e9;font-size:10px;padding:2px 6px;background:#f0f9ff;border-radius:4px;border:1px solid #bae6fd;font-weight:500;text-decoration:none;cursor:pointer;">${ml[t] || t} &#8595;</a>`;
                 });
                 s += '</div>';
@@ -364,6 +378,7 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
 
 function buildRecFooter(rec, summary, best) {
     let s = '';
+    const recStat = (v, digits, unit = '') => dlRecommendationMetric(v) != null ? v.toFixed(digits) + unit : 'Unknown';
     // Summary stat cards
     s += '<div class="stats">';
     s += dlStatCard(summary.successful_tests, 'Successful Tests');
@@ -371,18 +386,18 @@ function buildRecFooter(rec, summary, best) {
         s += dlStatCard(summary.discarded_tests, 'Discarded Tests (not viable)');
     }
     if (best.lowest_latency) {
-        s += dlStatCard(best.lowest_latency.ttft_p90.toFixed(1) + ' ms', 'Best TTFT P90');
-        if (best.lowest_latency.ttft_p95) s += dlStatCard(best.lowest_latency.ttft_p95.toFixed(1) + ' ms', 'Best TTFT P95');
-        if (best.lowest_latency.ttft_p99) s += dlStatCard(best.lowest_latency.ttft_p99.toFixed(1) + ' ms', 'Best TTFT P99');
+        s += dlStatCard(recStat(best.lowest_latency.ttft_p90, 1, ' ms'), 'Best TTFT P90');
+        s += dlStatCard(recStat(best.lowest_latency.ttft_p95, 1, ' ms'), 'TTFT P95 (P90-selected test)');
+        s += dlStatCard(recStat(best.lowest_latency.ttft_p99, 1, ' ms'), 'TTFT P99 (P90-selected test)');
     }
     if (best.lowest_itl) {
-        s += dlStatCard(best.lowest_itl.itl_p90.toFixed(2) + ' ms', `Best ITL P90 (${best.lowest_itl.name})`);
+        s += dlStatCard(recStat(best.lowest_itl.itl_p90, 2, ' ms'), `Best ITL P90 (${best.lowest_itl.name})`);
     }
     if (best.highest_throughput) {
-        const htVal = best.highest_throughput.throughput_mean || best.highest_throughput.throughput_p90;
-        s += dlStatCard(htVal.toFixed(2) + ' req/s', `Best Throughput Mean (${best.highest_throughput.name})`);
+        const htVal = best.highest_throughput.throughput_mean ?? best.highest_throughput.throughput_p90;
+        s += dlStatCard(recStat(htVal, 2, ' req/s'), `Best Throughput Mean (${best.highest_throughput.name})`);
     }
-    if (best.most_efficient) s += dlStatCard(best.most_efficient.efficiency.toFixed(3), 'Best Efficiency (req/s/GPU)');
+    if (best.most_efficient) s += dlStatCard(recStat(best.most_efficient.efficiency, 3), 'Best Efficiency (req/s/GPU)');
     s += '</div>';
 
     // Percentile Breakdown: PD/EP vs Aggregated (skip if primary is Aggregated)
@@ -398,32 +413,37 @@ function buildRecFooter(rec, summary, best) {
             const p = primaryRec.config.percentiles;
             const a = hasAgg ? aggBase.percentiles : null;
             s += `<div class="chart-box"><h3>Percentile Breakdown: ${primaryArch} vs Aggregated</h3>`;
-            s += `<p style="color:#64748b;font-size:0.9em;margin:0 0 8px;">Full percentile distribution (P50 through P99) for TTFT, ITL, and Throughput — comparing the best ${primaryArch} configuration against the Aggregated baseline. Green-highlighted P90 values indicate the winner.</p>`;
+            s += `<p style="color:#64748b;font-size:0.9em;margin:0 0 8px;">Latency percentiles (P50 through P99) and mean throughput for the selected ${primaryArch} configuration and Aggregated baseline. Green-highlighted P90 latency values indicate the lower measured value, not SLO feasibility.</p>`;
             s += '<table><tr><th>Configuration</th><th>Metric</th><th>P50</th><th>P90</th><th>P95</th><th>P99</th></tr>';
             const metricDefs = [
                 { name: 'TTFT (ms)', key: 'ttft', lowerBetter: true },
                 { name: 'ITL (ms)', key: 'itl', lowerBetter: true },
-                { name: 'Throughput (req/s)', key: 'throughput', lowerBetter: false },
+                { name: 'Mean throughput (req/s)', key: 'throughput', lowerBetter: false },
             ];
-            const entries = [{label: primaryArch, pctl: p}];
-            if (a) entries.push({label: 'Aggregated', pctl: a});
-            entries.forEach(({label, pctl}, idx) => {
+            const entries = [{label: primaryArch, pctl: p, cfg: primaryRec.config}];
+            if (a) entries.push({label: 'Aggregated', pctl: a, cfg: aggBase});
+            entries.forEach(({label, pctl, cfg}, idx) => {
                 metricDefs.forEach((m, mi) => {
                     const d = pctl[m.key] || {};
+                    if (m.key === 'throughput') {
+                        const mean = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
+                        s += `<tr><td style="color:#64748b;">${m.name}</td><td colspan="4">${mean != null ? mean.toFixed(2) : 'Unknown'} (mean, not a percentile)</td></tr>`;
+                        return;
+                    }
                     const bs = mi === 0 && idx > 0 ? 'border-top:2px solid #cbd5e1;' : '';
                     let p90Style = '';
                     if (a) {
                         const other = idx === 0 ? (a[m.key] || {}) : (p[m.key] || {});
-                        const wins = m.lowerBetter ? (d.p90 != null && other.p90 != null && d.p90 < other.p90) : (d.p90 != null && other.p90 != null && d.p90 > other.p90);
+                        const wins = dlRecommendationMetric(d.p90) != null && dlRecommendationMetric(other.p90) != null && d.p90 < other.p90;
                         if (wins) p90Style = 'color:#10b981;font-weight:700;';
                     }
                     s += '<tr>';
                     if (mi === 0) s += `<td rowspan="3" style="vertical-align:middle;font-weight:700;${bs}">${label}</td>`;
                     s += `<td style="color:#64748b;${bs}">${m.name}</td>`;
-                    s += `<td style="${bs}">${d.p50 ?? '-'}</td>`;
-                    s += `<td style="${p90Style}${bs}">${d.p90 ?? '-'}</td>`;
-                    s += `<td style="${bs}">${d.p95 ?? '-'}</td>`;
-                    s += `<td style="${bs}">${d.p99 ?? '-'}</td>`;
+                    s += `<td style="${bs}">${dlRecommendationMetric(d.p50) ?? 'Unknown'}</td>`;
+                    s += `<td style="${p90Style}${bs}">${dlRecommendationMetric(d.p90) ?? 'Unknown'}</td>`;
+                    s += `<td style="${bs}">${dlRecommendationMetric(d.p95) ?? 'Unknown'}</td>`;
+                    s += `<td style="${bs}">${dlRecommendationMetric(d.p99) ?? 'Unknown'}</td>`;
                     s += '</tr>';
                 });
             });
@@ -781,7 +801,7 @@ function buildStep9Section(data) {
 }
 
 // ── Calibrated Load Recommendation Cards (reused in Recommendation tab and Calibrated tab)
-function buildCalRecCards(data) {
+function buildCalRecCards(data, runId) {
     const calBest = data.summary && data.summary.calibrated_best;
     if (!calBest) return '';
     let s = '';
@@ -799,7 +819,7 @@ function buildCalRecCards(data) {
 
         s += '<div style="border:2px solid #0ea5e9;border-left:6px solid #0ea5e9;border-radius:10px;margin:0 0 20px;overflow:hidden;">';
         s += '<div style="background:linear-gradient(135deg,#0ea5e9,#06b6d4);padding:14px 20px;font-size:1.1em;font-weight:800;color:white;">Deployment Recommendation &mdash; Calibrated Load</div>';
-        s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Performance at sustainable production load — calibrated concurrency where queue wait is reasonable. These results reflect realistic production conditions.</div>';
+        s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Measured performance at tested calibrated concurrency. These results are not a production capacity or SLO guarantee.</div>';
         s += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;padding:16px 20px;">';
 
         calTypes.forEach(sel => {
@@ -822,9 +842,8 @@ function buildCalRecCards(data) {
             } else {
                 deploy = cfg.name || cfg.config_name || '';
             }
-            const tput = cfg.throughput_mean || cfg.throughput_p90 || '-';
-            const concStr = cfg.concurrency ? `c=${cfg.concurrency}` : '';
-            const fmtE2e = v => v != null ? (v >= 1000 ? (v/1000).toFixed(1) + ' s' : Math.round(v) + ' ms') : '-';
+            const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput_p90);
+            const concStr = 'c=' + (dlRecommendationMetric(cfg.concurrency) ?? 'Unknown');
 
             s += '<div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);border:2px solid #cbd5e1;">';
             s += `<div style="background:linear-gradient(135deg,${sel.color},${sel.color}cc);padding:10px 14px;color:white;">`;
@@ -837,8 +856,8 @@ function buildCalRecCards(data) {
             s += '<div style="padding:12px 14px;">';
             s += `<div style="font-size:1.1em;font-weight:800;color:#0f172a;margin-bottom:8px;">${deploy}</div>`;
             s += '<div style="display:flex;gap:12px;font-size:0.85em;color:#475569;margin-bottom:4px;">';
-            s += `<span>Throughput: <strong>${typeof tput === 'number' ? tput.toFixed(2) + ' req/s' : tput}</strong></span>`;
-            s += `<span>GPUs: <strong>${cfg.gpus || '?'}</strong></span>`;
+            s += `<span>Mean throughput: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
+            s += `<span>GPUs: <strong>${dlRecommendationMetric(cfg.gpus) ?? 'Unknown'}</strong></span>`;
             if (concStr) s += `<span style="color:#0ea5e9;font-weight:600;">${concStr}</span>`;
             s += '</div>';
             // vLLM tok/s
@@ -846,13 +865,7 @@ function buildCalRecCards(data) {
             if (calVllmTps != null) {
                 s += `<div style="font-size:0.8em;color:#475569;margin-bottom:4px;"><span>vLLM: <strong style="color:#3b82f6;">${Math.round(calVllmTps).toLocaleString()} tok/s</strong> <span style="font-size:0.85em;color:#94a3b8;">(server total)</span></span></div>`;
             }
-            s += '<table style="width:100%;font-size:0.8em;border-collapse:collapse;margin-top:6px;">';
-            s += '<tr style="color:#94a3b8;font-weight:600;"><td></td><td>TTFT</td><td>E2E</td><td>ITL</td></tr>';
-            if (cfg.ttft_p50) s += `<tr><td style="font-weight:600;color:#475569;">P50</td><td style="color:#64748b;">${Math.round(cfg.ttft_p50).toLocaleString()} ms</td><td style="color:#64748b;">${fmtE2e(cfg.e2e_p50)}</td><td>${fmtItl(cfg.itl_p50)}</td></tr>`;
-            s += `<tr><td style="font-weight:600;color:#475569;">P90</td><td style="font-weight:700;color:#1e293b;">${cfg.ttft_p90 != null ? Math.round(cfg.ttft_p90).toLocaleString() + ' ms' : '-'}</td><td>${fmtE2e(cfg.e2e_p90)}</td><td>${fmtItl(cfg.itl_p90)}</td></tr>`;
-            if (cfg.ttft_p95) s += `<tr><td style="font-weight:600;color:#475569;">P95</td><td style="color:#64748b;">${Math.round(cfg.ttft_p95).toLocaleString()} ms</td><td style="color:#64748b;">${fmtE2e(cfg.e2e_p95)}</td><td>${fmtItl(cfg.itl_p95)}</td></tr>`;
-            if (cfg.ttft_p99) s += `<tr><td style="font-weight:600;color:#475569;">P99</td><td style="color:#64748b;">${Math.round(cfg.ttft_p99).toLocaleString()} ms</td><td style="color:#64748b;">${fmtE2e(cfg.e2e_p99)}</td><td>${fmtItl(cfg.itl_p99)}</td></tr>`;
-            s += '</table>';
+            s += dlRecommendationTable(cfg, runId);
             s += '</div></div>';
         });
 
@@ -862,7 +875,7 @@ function buildCalRecCards(data) {
 }
 
 // ── Cache Sweep Recommendation Cards ────────────────────────────────────────
-function buildCacheRecCards(data) {
+function buildCacheRecCards(data, runId) {
     const cacheBest = data.summary && data.summary.cache_sweep_best;
     if (!cacheBest) return '';
     let s = '';
@@ -901,10 +914,9 @@ function buildCacheRecCards(data) {
         } else {
             deploy = cfg.name || cfg.config_name || '';
         }
-        const tput = cfg.throughput_mean || cfg.throughput_p90 || '-';
-        const concStr = cfg.concurrency ? `c=${cfg.concurrency}` : '';
+        const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput_p90);
+        const concStr = 'c=' + (dlRecommendationMetric(cfg.concurrency) ?? 'Unknown');
         const cacheStr = cfg.cache_hit_pct != null ? cfg.cache_hit_pct + '% cache hit' : '';
-        const fmtE2e = v => v != null ? (v >= 1000 ? (v/1000).toFixed(1) + ' s' : Math.round(v) + ' ms') : '-';
 
         s += '<div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);border:2px solid #cbd5e1;">';
         s += `<div style="background:linear-gradient(135deg,${sel.color},${sel.color}cc);padding:10px 14px;color:white;">`;
@@ -918,20 +930,14 @@ function buildCacheRecCards(data) {
         s += '<div style="padding:12px 14px;">';
         s += `<div style="font-size:1.1em;font-weight:800;color:#0f172a;margin-bottom:8px;">${deploy}</div>`;
         s += '<div style="display:flex;gap:12px;font-size:0.85em;color:#475569;margin-bottom:4px;">';
-        s += `<span>Throughput: <strong>${typeof tput === 'number' ? tput.toFixed(2) + ' req/s' : tput}</strong></span>`;
-        s += `<span>GPUs: <strong>${cfg.gpus || '?'}</strong></span>`;
+        s += `<span>Mean throughput: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
+        s += `<span>GPUs: <strong>${dlRecommendationMetric(cfg.gpus) ?? 'Unknown'}</strong></span>`;
         if (concStr) s += `<span style="color:#7c3aed;font-weight:600;">${concStr}</span>`;
         s += '</div>';
         if (cfg.vllm_tps != null) {
             s += `<div style="font-size:0.8em;color:#475569;margin-bottom:4px;"><span>vLLM: <strong style="color:#7c3aed;">${Math.round(cfg.vllm_tps).toLocaleString()} tok/s</strong> <span style="font-size:0.85em;color:#94a3b8;">(server total)</span></span></div>`;
         }
-        s += '<table style="width:100%;font-size:0.8em;border-collapse:collapse;margin-top:6px;">';
-        s += '<tr style="color:#94a3b8;font-weight:600;"><td></td><td>TTFT</td><td>E2E</td><td>ITL</td></tr>';
-        if (cfg.ttft_p50) s += `<tr><td style="font-weight:600;color:#475569;">P50</td><td style="color:#64748b;">${Math.round(cfg.ttft_p50).toLocaleString()} ms</td><td style="color:#64748b;">${fmtE2e(cfg.e2e_p50)}</td><td>${fmtItl(cfg.itl_p50)}</td></tr>`;
-        s += `<tr><td style="font-weight:600;color:#475569;">P90</td><td style="font-weight:700;color:#1e293b;">${cfg.ttft_p90 != null ? Math.round(cfg.ttft_p90).toLocaleString() + ' ms' : '-'}</td><td>${fmtE2e(cfg.e2e_p90)}</td><td>${fmtItl(cfg.itl_p90)}</td></tr>`;
-        if (cfg.ttft_p95) s += `<tr><td style="font-weight:600;color:#475569;">P95</td><td style="color:#64748b;">${Math.round(cfg.ttft_p95).toLocaleString()} ms</td><td style="color:#64748b;">${fmtE2e(cfg.e2e_p95)}</td><td>${fmtItl(cfg.itl_p95)}</td></tr>`;
-        if (cfg.ttft_p99) s += `<tr><td style="font-weight:600;color:#475569;">P99</td><td style="color:#64748b;">${Math.round(cfg.ttft_p99).toLocaleString()} ms</td><td style="color:#64748b;">${fmtE2e(cfg.e2e_p99)}</td><td>${fmtItl(cfg.itl_p99)}</td></tr>`;
-        s += '</table>';
+        s += dlRecommendationTable(cfg, runId);
         s += '</div></div>';
     });
 

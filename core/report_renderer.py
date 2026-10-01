@@ -1,3 +1,4 @@
+# fmt: off
 """
 Report rendering — standalone HTML and Markdown reports.
 
@@ -52,8 +53,8 @@ class ReportRenderer:
                 marker=dict(size=15, color=color, symbol='diamond',
                             line=dict(width=2, color='white')),
                 text=[f"{p.config.config_name}<br>"
-                      f"TTFT: {p.ttft:.1f}ms<br>"
-                      f"Throughput: {p.throughput:.2f} req/s<br>"
+                      f"{p.latency_label}: {p.ttft:.1f}ms<br>"
+                      f"{p.throughput_label}: {p.throughput:.2f} req/s<br>"
                       f"Efficiency: {p.efficiency:.3f} req/s/GPU"
                       for p in arch_points],
                 hovertemplate='<b>%{text}</b><extra></extra>',
@@ -62,7 +63,7 @@ class ReportRenderer:
 
         fig.update_layout(
             title='Pareto Frontier: Optimal Latency-Cost Trade-offs',
-            xaxis_title='Total GPUs', yaxis_title='TTFT P90 (ms)',
+            xaxis_title='Total GPUs', yaxis_title=f'{pareto[0].latency_label} (ms)',
             hovermode='closest', template='plotly_white', height=500,
             showlegend=True,
             legend=dict(yanchor="top", y=0.99, xanchor="right", x=0.99)
@@ -108,7 +109,7 @@ class ReportRenderer:
     def create_efficiency_chart(self, results: List[TestResult]) -> Optional['go.Figure']:
         if not PLOTLY_AVAILABLE:
             return None
-        successful = [r for r in results if r.is_successful]
+        successful = [r for r in results if r.is_ranking_eligible]
         if not successful:
             return None
 
@@ -245,11 +246,11 @@ class ReportRenderer:
 
         # Pareto frontier table
         if pareto:
-            html_parts.append('''
+            html_parts.append(f'''
     <h2>Pareto Frontier</h2>
     <p>Configurations representing optimal trade-offs between latency, throughput, and cost.</p>
     <table>
-        <tr><th>Configuration</th><th>TTFT P90 (ms)</th><th>Throughput P90 (req/s)</th><th>GPUs</th><th>Efficiency (req/s/GPU)</th><th>Architecture</th></tr>
+        <tr><th>Configuration</th><th>{pareto[0].latency_label} (ms)</th><th>{pareto[0].throughput_label} (req/s)</th><th>GPUs</th><th>Efficiency (req/s/GPU)</th><th>Architecture</th></tr>
 ''')
             for point in pareto:
                 html_parts.append(f'''        <tr><td><code>{point.config.config_name}</code></td><td>{point.ttft:.2f}</td><td>{point.throughput:.2f}</td><td>{point.cost}</td><td>{point.efficiency:.3f}</td><td>{point.config.architecture.upper()}</td></tr>
@@ -265,7 +266,7 @@ class ReportRenderer:
         <tr><th>Configuration</th><th>TTFT P90 (ms)</th><th>ITL P90 (ms)</th><th>ITL P95 (ms)</th><th>ITL P99 (ms)</th><th>Throughput P90 (req/s)</th><th>GPUs</th><th>GPU Util (%)</th><th>KV Cache (%)</th><th>Efficiency</th><th>Architecture</th></tr>
 ''')
             for result in sorted(successful, key=lambda r: r.ttft_p90):
-                eff = result.throughput_p90 / result.total_gpus
+                eff = result.throughput_p90 / result.total_gpus if result.total_gpus > 0 else 0
                 itl90 = f"{result.itl_p90:.2f}" if result.itl_p90 else "N/A"
                 itl95 = f"{result.itl_p95:.2f}" if result.itl_p95 else "N/A"
                 itl99 = f"{result.itl_p99:.2f}" if result.itl_p99 else "N/A"
@@ -368,7 +369,7 @@ class ReportRenderer:
         lines.append("latency, throughput, and resource cost.\n")
 
         if pareto:
-            lines.append("| Configuration | TTFT P90 (ms) | Throughput P90 (req/s) | GPUs | Efficiency (req/s/GPU) | Architecture |")
+            lines.append(f"| Configuration | {pareto[0].latency_label} (ms) | {pareto[0].throughput_label} (req/s) | GPUs | Efficiency (req/s/GPU) | Architecture |")
             lines.append("|---------------|---------------|------------------------|------|------------------------|--------------|")
 
             for point in pareto:

@@ -1,3 +1,4 @@
+# fmt: off
 """
 Report data models and database loader.
 
@@ -7,10 +8,17 @@ for reading test results from the SQLite database.
 
 import sqlite3
 import logging
+import math
 from typing import List, Optional
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+def valid_metric(value, *, positive=False) -> bool:
+    """Whether a measured metric is finite and in its nonnegative domain."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and (value > 0 if positive else value >= 0))
 
 
 @dataclass
@@ -57,13 +65,7 @@ class TestResult:
     @property
     def throughput_mean(self) -> Optional[float]:
         """Mean throughput from guidellm's measurement window (req/s)."""
-        if self.metrics_json:
-            try:
-                import json
-                return json.loads(self.metrics_json).get('throughput_mean')
-            except Exception:
-                pass
-        return None
+        return self._metrics_val('throughput_mean')
 
     @property
     def cache_hit_pct(self) -> Optional[float]:
@@ -153,6 +155,23 @@ class TestResult:
                 self.throughput_p90 > 0 and
                 self.ttft_p90 < 1000000)  # Filter out penalty values
 
+    @property
+    def is_ranking_eligible(self) -> bool:
+        """Quality/base-metric gate, separate from diagnostic completion status.
+
+        Each ranking must additionally validate its own objective percentile.
+        Missing mean throughput retains the legacy P90 compatibility fallback;
+        an explicitly invalid mean must not be hidden by that fallback.
+        """
+        mean = self.throughput_mean
+        return (self.quality != 'discard'
+                and valid_metric(self.ttft_p90)
+                and valid_metric(self.throughput_p90, positive=True)
+                and self.is_successful
+                and (mean is None or valid_metric(mean, positive=True))
+                and valid_metric(self.total_gpus, positive=True)
+                and valid_metric(self.tensor_parallelism, positive=True))
+
 
 @dataclass
 class ParetoPoint:
@@ -162,6 +181,16 @@ class ParetoPoint:
     throughput: float  # req/s
     cost: int  # Total GPUs
     efficiency: float  # throughput / GPU
+    metric: str = 'ttft_p99'
+    throughput_metric: str = 'throughput_p90'
+
+    @property
+    def latency_label(self) -> str:
+        return self.metric.replace('_', ' ').upper()
+
+    @property
+    def throughput_label(self) -> str:
+        return self.throughput_metric.replace('_', ' ').title()
 
     def __str__(self) -> str:
         return (f"{self.config.config_name}: "

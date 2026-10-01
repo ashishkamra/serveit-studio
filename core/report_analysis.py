@@ -1,3 +1,4 @@
+# fmt: off
 """
 Report analysis engine.
 
@@ -9,9 +10,32 @@ recommendations, chart data preparation.
 import logging
 from typing import List, Dict, Any
 
-from core.report_data import TestResult, ParetoPoint
+from core.report_data import TestResult, ParetoPoint, valid_metric
 
 logger = logging.getLogger(__name__)
+
+
+def _latency(value):
+    return valid_metric(value) and value < 1000000
+
+
+def _rounded(value, digits=2, scale=1):
+    return round(value * scale, digits) if valid_metric(value) and valid_metric(value * scale) else None
+
+
+def _result_evidence(result):
+    """Additive, same-test evidence; legacy test_id remains a config-name key.
+
+    test_config_id is the immutable database primary key. E2E card fields are
+    milliseconds, matching the existing e2e_p90/p95/p99 payload contract.
+    """
+    data = {'test_id': result.config_name, 'test_config_id': result.id,
+            'quality': result.quality, 'is_ranking_eligible': result.is_ranking_eligible}
+    for p in ('p50', 'p90', 'p95', 'p99'):
+        data[f'ttft_{p}'] = _rounded(getattr(result, f'ttft_{p}'), 1)
+        data[f'itl_{p}'] = _rounded(getattr(result, f'itl_{p}'))
+        data[f'e2e_{p}'] = _rounded(getattr(result, f'e2e_latency_{p}'), 1, 1000)
+    return data
 
 
 class ReportAnalyzer:
@@ -27,10 +51,10 @@ class ReportAnalyzer:
         A configuration is on the Pareto frontier if no other configuration
         is strictly better in all objectives (lower latency, higher throughput, lower cost).
         """
-        successful = [r for r in results if r.is_successful]
+        successful = [r for r in results if r.is_ranking_eligible]
 
         if not successful:
-            logger.warning("No successful test results for Pareto analysis")
+            logger.warning("No eligible test results for Pareto analysis")
             return []
 
         candidates = []
@@ -39,7 +63,7 @@ class ReportAnalyzer:
             throughput = getattr(config, throughput_metric)
             cost = config.total_gpus
 
-            if ttft is None or throughput is None or cost == 0:
+            if not _latency(ttft) or not valid_metric(throughput, positive=True) or cost <= 0:
                 continue
 
             efficiency = throughput / cost
@@ -48,7 +72,9 @@ class ReportAnalyzer:
                 ttft=ttft,
                 throughput=throughput,
                 cost=cost,
-                efficiency=efficiency
+                efficiency=efficiency,
+                metric=metric,
+                throughput_metric=throughput_metric,
             ))
 
         if not candidates:
@@ -80,23 +106,34 @@ class ReportAnalyzer:
     def get_summary_statistics(self, results: List[TestResult]) -> Dict[str, Any]:
         """Calculate summary statistics across all tests."""
         successful = [r for r in results if r.is_successful]
+        eligible = [r for r in results if r.is_ranking_eligible]
         broken = [r for r in results if r.status == 'completed' and not r.is_successful]
 
-        if not successful:
+        if not eligible:
             return {
                 'total_tests': len(results),
-                'successful_tests': 0,
+                'successful_tests': len(successful),
+                'eligible_tests': 0,
                 'failed_tests': len([r for r in results if r.status == 'failed']),
+                'discarded_tests': len([r for r in results if r.quality == 'discard']) + len([r for r in results if r.status == 'failed']),
                 'broken_tests': len(broken),
-                'error': 'No successful tests'
+                'error': 'No eligible tests' if successful else 'No successful tests'
             }
 
         # Core results: step6/7 for architecture averages, all non-calibration for best configs
-        core_results = [r for r in successful if not r.config_name.startswith(('step2', 'step3', 'step9', 'step10', 'step11', 'step12', 'step13'))]
+        core_results = [r for r in eligible if not r.config_name.startswith(('step2', 'step3', 'step9', 'step10', 'step11', 'step12', 'step13'))]
         if not core_results:
-            core_results = successful
+            core_results = eligible
         # Include sweep results for best-of comparisons (sweep often finds better operating points)
-        all_valid = [r for r in successful if not r.config_name.startswith(('step2', 'step3'))]
+        all_valid = [r for r in eligible if not r.config_name.startswith(('step2', 'step3'))]
+        if not all_valid:
+            return {
+                'total_tests': len(results), 'successful_tests': len(successful),
+                'eligible_tests': len(eligible),
+                'failed_tests': len([r for r in results if r.status == 'failed']),
+                'discarded_tests': len([r for r in results if r.quality == 'discard']) + len([r for r in results if r.status == 'failed']),
+                'broken_tests': len(broken), 'error': 'No eligible workload tests',
+            }
 
         by_arch = {}
         for arch in ['aggregated', 'pd', 'ep']:
@@ -113,7 +150,7 @@ class ReportAnalyzer:
                 }
 
         best_ttft_config = min(all_valid, key=lambda r: r.ttft_p90)
-        best_itl_valid = [r for r in all_valid if r.itl_p90 and r.itl_p90 > 0]
+        best_itl_valid = [r for r in all_valid if _latency(r.itl_p90)]
         best_itl_config = min(best_itl_valid, key=lambda r: r.itl_p90) if best_itl_valid else None
         best_throughput_config = max(all_valid, key=lambda r: r.throughput_mean or r.throughput_p90 or 0)
         best_efficiency_config = max(all_valid, key=lambda r: (r.throughput_mean or r.throughput_p90 or 0) / max(r.total_gpus, 1))
@@ -121,22 +158,23 @@ class ReportAnalyzer:
         return {
             'total_tests': len(results),
             'successful_tests': len(successful),
+            'eligible_tests': len(eligible),
             'failed_tests': len([r for r in results if r.status == 'failed']),
             'discarded_tests': len([r for r in results if r.quality == 'discard']) + len([r for r in results if r.status == 'failed']),
             'broken_tests': len(broken),
             'by_architecture': by_arch,
             'best_configs': {
                 'lowest_latency': {
+                    **_result_evidence(best_ttft_config),
                     'name': best_ttft_config.display_label,
                     'architecture': best_ttft_config.architecture,
                     'ttft_p90': best_ttft_config.ttft_p90,
-                    'ttft_p95': best_ttft_config.ttft_p95,
-                    'ttft_p99': best_ttft_config.ttft_p99,
                     'throughput_mean': best_ttft_config.throughput_mean,
                     'throughput_p90': best_ttft_config.throughput_p90,
                     'gpus': best_ttft_config.total_gpus,
                 },
                 'highest_throughput': {
+                    **_result_evidence(best_throughput_config),
                     'name': best_throughput_config.display_label,
                     'architecture': best_throughput_config.architecture,
                     'ttft_p90': best_throughput_config.ttft_p90,
@@ -147,14 +185,14 @@ class ReportAnalyzer:
                     'gpus': best_throughput_config.total_gpus,
                 },
                 'lowest_itl': {
+                    **_result_evidence(best_itl_config),
                     'name': best_itl_config.display_label,
                     'architecture': best_itl_config.architecture,
                     'itl_p90': best_itl_config.itl_p90,
-                    'itl_p95': best_itl_config.itl_p95,
-                    'itl_p99': best_itl_config.itl_p99,
                     'gpus': best_itl_config.total_gpus,
                 } if best_itl_config else None,
                 'most_efficient': {
+                    **_result_evidence(best_efficiency_config),
                     'name': best_efficiency_config.display_label,
                     'architecture': best_efficiency_config.architecture,
                     'ttft_p90': best_efficiency_config.ttft_p90,
@@ -164,8 +202,8 @@ class ReportAnalyzer:
                 },
                 'by_architecture': {arch.upper(): {
                     'best_ttft_p90': min(r.ttft_p90 for r in arch_rs),
-                    'best_ttft_p95': min((r.ttft_p95 or 1e9) for r in arch_rs),
-                    'best_ttft_p99': min((r.ttft_p99 or 1e9) for r in arch_rs),
+                    'best_ttft_p95': min((r.ttft_p95 for r in arch_rs if _latency(r.ttft_p95)), default=None),
+                    'best_ttft_p99': min((r.ttft_p99 for r in arch_rs if _latency(r.ttft_p99)), default=None),
                     'best_throughput_mean': max((r.throughput_mean or 0) for r in arch_rs),
                     'best_name_ttft': min(arch_rs, key=lambda r: r.ttft_p90).display_label,
                     'best_name_tput': max(arch_rs, key=lambda r: r.throughput_mean or 0).display_label,
@@ -174,9 +212,9 @@ class ReportAnalyzer:
                   if arch_rs},
             },
             # Calibrated recommendations from sweep (step11) — realistic production performance
-            'calibrated_best': self._build_calibrated_best(successful),
+            'calibrated_best': self._build_calibrated_best(eligible),
             # Cache sweep recommendations (step13)
-            'cache_sweep_best': self._build_cache_sweep_best(successful),
+            'cache_sweep_best': self._build_cache_sweep_best(eligible),
         }
 
     def _build_calibrated_best(self, successful, user_concurrency=None):
@@ -187,11 +225,11 @@ class ReportAnalyzer:
         For TTFT recommendation, only considers results at ≥50% of user concurrency
         to avoid recommending unrealistically low-load configs.
         """
-        all_sweep = [r for r in successful if r.config_name.startswith('step11-sweep-') and r.ttft_p90 and r.ttft_p90 > 0 and r.quality != 'discard']
+        all_sweep = [r for r in successful if r.config_name.startswith('step11-sweep-') and r.is_ranking_eligible]
         if not all_sweep:
             return None
         # Only use results from configs in concurrency_sweep (the selected configs)
-        sweep_keys = self._sweep_config_keys or []
+        sweep_keys = getattr(self, '_sweep_config_keys', []) or []
         if sweep_keys:
             sweep = [r for r in all_sweep if any(r.config_name.startswith(f"step11-sweep-{sk}") for sk in sweep_keys)]
         else:
@@ -256,27 +294,28 @@ class ReportAnalyzer:
                     'prefill_pods': r.prefill_pods, 'decode_pods': r.decode_pods,
                     'prefill_tp': ptp, 'decode_tp': dtp,
                 })
+            entry.update(_result_evidence(r))
             return entry
 
-        balanced = min(sweep, key=lambda r: (r.ttft_p90 or 1e9) / (r.throughput_mean or 0.001))
-        lowest_ttft = min(sweep, key=lambda r: r.ttft_p90 or 1e9)
-        itl_valid = [r for r in sweep if r.itl_p90 and r.itl_p90 > 0]
+        balanced = min(sweep, key=lambda r: r.ttft_p90 / (r.throughput_mean or r.throughput_p90))
+        lowest_ttft = min(sweep, key=lambda r: r.ttft_p90)
+        itl_valid = [r for r in sweep if _latency(r.itl_p90)]
         lowest_itl = min(itl_valid, key=lambda r: r.itl_p90) if itl_valid else None
-        highest_tput = max(sweep, key=lambda r: r.throughput_mean or 0)
-        most_eff = max(sweep, key=lambda r: (r.throughput_mean or 0) / max(r.total_gpus, 1))
+        highest_tput = max(sweep, key=lambda r: r.throughput_mean or r.throughput_p90)
+        most_eff = max(sweep, key=lambda r: (r.throughput_mean or r.throughput_p90) / r.total_gpus)
 
         result = {
             'balanced': _to_dict(balanced),
             'lowest_ttft': _to_dict(lowest_ttft),
             'lowest_itl': _to_dict(lowest_itl) if lowest_itl else None,
             'highest_tput': _to_dict(highest_tput),
-            'most_efficient': {**_to_dict(most_eff), 'efficiency': round((most_eff.throughput_mean or 0) / max(most_eff.total_gpus, 1), 4)},
+            'most_efficient': {**_to_dict(most_eff), 'efficiency': round((most_eff.throughput_mean or most_eff.throughput_p90) / most_eff.total_gpus, 4)},
         }
         return result
 
     def _build_cache_sweep_best(self, successful):
         """Build best configs from cache sweep (step13) results."""
-        cache_results = [r for r in successful if r.config_name.startswith('step13-') and r.ttft_p90 and r.ttft_p90 > 0 and r.quality != 'discard']
+        cache_results = [r for r in successful if r.config_name.startswith('step13-') and r.is_ranking_eligible]
         if not cache_results:
             return None
 
@@ -331,20 +370,21 @@ class ReportAnalyzer:
                     'prefill_pods': r.prefill_pods, 'decode_pods': r.decode_pods,
                     'prefill_tp': ptp, 'decode_tp': dtp,
                 })
+            entry.update(_result_evidence(r))
             return entry
 
-        balanced = min(cache_results, key=lambda r: (r.ttft_p90 or 1e9) / (r.throughput_mean or 0.001))
-        highest_tput = max(cache_results, key=lambda r: r.throughput_mean or 0)
-        lowest_ttft = min(cache_results, key=lambda r: r.ttft_p90 or 1e9)
-        itl_valid = [r for r in cache_results if r.itl_p90 and r.itl_p90 > 0]
+        balanced = min(cache_results, key=lambda r: r.ttft_p90 / (r.throughput_mean or r.throughput_p90))
+        highest_tput = max(cache_results, key=lambda r: r.throughput_mean or r.throughput_p90)
+        lowest_ttft = min(cache_results, key=lambda r: r.ttft_p90)
+        itl_valid = [r for r in cache_results if _latency(r.itl_p90)]
         lowest_itl = min(itl_valid, key=lambda r: r.itl_p90) if itl_valid else None
-        most_eff = max(cache_results, key=lambda r: (r.throughput_mean or 0) / max(r.total_gpus, 1))
+        most_eff = max(cache_results, key=lambda r: (r.throughput_mean or r.throughput_p90) / r.total_gpus)
 
         result = {
             'balanced': _to_dict(balanced),
             'lowest_ttft': _to_dict(lowest_ttft),
             'highest_tput': _to_dict(highest_tput),
-            'most_efficient': {**_to_dict(most_eff), 'efficiency': round((most_eff.throughput_mean or 0) / max(most_eff.total_gpus, 1), 4)},
+            'most_efficient': {**_to_dict(most_eff), 'efficiency': round((most_eff.throughput_mean or most_eff.throughput_p90) / most_eff.total_gpus, 4)},
         }
         if lowest_itl:
             result['lowest_itl'] = _to_dict(lowest_itl)
@@ -446,7 +486,7 @@ class ReportAnalyzer:
         all_pd_tests = []
         all_ep_tests = []
         for r in results:
-            if not r.is_successful:
+            if not r.is_ranking_eligible:
                 continue
             if r.config_name.startswith('step2'):
                 step2_tests.append(r)
@@ -479,6 +519,8 @@ class ReportAnalyzer:
             tput = r.throughput_p90 or r.throughput_p50 or 0
             if tput > 0:
                 tpsg = (tput * osl) / r.tensor_parallelism
+                if not valid_metric(tpsg, positive=True):
+                    continue
                 tcfg = r.test_config_json if hasattr(r, 'test_config_json') else None
                 if isinstance(tcfg, str):
                     import json as _tcj
@@ -488,10 +530,11 @@ class ReportAnalyzer:
                         tcfg = {}
                 tcfg = tcfg or {}
                 decode_tp_results.append({
+                    **_result_evidence(r),
                     'tp': r.tensor_parallelism,
                     'tpsg': round(tpsg, 1),
-                    'itl_p90': round(r.itl_p90, 2) if r.itl_p90 else None,
-                    'ttft_p90': round(r.ttft_p90, 2) if r.ttft_p90 else None,
+                    'itl_p90': _rounded(r.itl_p90),
+                    'ttft_p90': _rounded(r.ttft_p90),
                     'cal_isl': tcfg.get('isl'),
                     'cal_osl': tcfg.get('osl'),
                     'cal_concurrency': tcfg.get('num_users'),
@@ -514,6 +557,8 @@ class ReportAnalyzer:
             tput = r.throughput_p90 or r.throughput_p50 or 0
             if tput > 0:
                 tpsg = (tput * isl) / r.tensor_parallelism
+                if not valid_metric(tpsg, positive=True):
+                    continue
                 tcfg = r.test_config_json if hasattr(r, 'test_config_json') else None
                 if isinstance(tcfg, str):
                     import json as _tcj
@@ -523,9 +568,10 @@ class ReportAnalyzer:
                         tcfg = {}
                 tcfg = tcfg or {}
                 prefill_tp_results.append({
+                    **_result_evidence(r),
                     'tp': r.tensor_parallelism,
                     'tpsg': round(tpsg, 1),
-                    'ttft_p90': round(r.ttft_p90, 2) if r.ttft_p90 else None,
+                    'ttft_p90': _rounded(r.ttft_p90),
                     'cal_isl': tcfg.get('isl'),
                     'cal_osl': tcfg.get('osl'),
                     'cal_concurrency': tcfg.get('num_users'),
@@ -544,24 +590,8 @@ class ReportAnalyzer:
         # --- Helper to extract full percentile data ---
         def _percentiles(r):
             return {
-                'ttft': {
-                    'p50': round(r.ttft_p50, 1) if r.ttft_p50 else None,
-                    'p90': round(r.ttft_p90, 1) if r.ttft_p90 else None,
-                    'p95': round(r.ttft_p95, 1) if r.ttft_p95 else None,
-                    'p99': round(r.ttft_p99, 1) if r.ttft_p99 else None,
-                },
-                'itl': {
-                    'p50': round(r.itl_p50, 2) if r.itl_p50 else None,
-                    'p90': round(r.itl_p90, 2) if r.itl_p90 else None,
-                    'p95': round(r.itl_p95, 2) if r.itl_p95 else None,
-                    'p99': round(r.itl_p99, 2) if r.itl_p99 else None,
-                },
-                'throughput': {
-                    'p50': round(r.throughput_p50, 2) if r.throughput_p50 else None,
-                    'p90': round(r.throughput_p90, 2) if r.throughput_p90 else None,
-                    'p95': round(r.throughput_p95, 2) if r.throughput_p95 else None,
-                    'p99': round(r.throughput_p99, 2) if r.throughput_p99 else None,
-                },
+                metric: {p: _rounded(getattr(r, f'{metric}_{p}'), digits) for p in ('p50', 'p90', 'p95', 'p99')}
+                for metric, digits in (('ttft', 1), ('itl', 2), ('throughput', 2))
             }
 
         def _config_dict(r, include_eff=False):
@@ -645,6 +675,7 @@ class ReportAnalyzer:
             }
             if include_eff:
                 d['efficiency'] = round(r.throughput_p90 / r.total_gpus, 3)
+            d.update(_result_evidence(r))
             return d
 
         # --- Best PD configuration (across all PD results) ---
@@ -654,13 +685,15 @@ class ReportAnalyzer:
 
         pd_pool = all_pd_tests if all_pd_tests else step7_tests
         if pd_pool:
-            by_ttft = min(pd_pool, key=lambda r: r.ttft_p99 or r.ttft_p90 or 1e9)
-            best_pd_ttft = _config_dict(by_ttft)
+            p99_pool = [r for r in pd_pool if _latency(r.ttft_p99)]
+            if p99_pool:
+                by_ttft = min(p99_pool, key=lambda r: r.ttft_p99)
+                best_pd_ttft = _config_dict(by_ttft)
 
             by_tput = max(pd_pool, key=lambda r: r.throughput_mean or r.throughput_p90 or 0)
             best_pd_throughput = _config_dict(by_tput)
 
-            by_balanced = min(pd_pool, key=lambda r: (r.ttft_p90 or 1e9) / (r.throughput_mean or 0.001))
+            by_balanced = min(pd_pool, key=lambda r: r.ttft_p90 / (r.throughput_mean or r.throughput_p90))
             best_pd_balanced = _config_dict(by_balanced)
 
         # --- Best EP configuration (from step7-ep tests) ---
@@ -687,6 +720,7 @@ class ReportAnalyzer:
                     'throughput_mean': round(r.throughput_mean, 2) if r.throughput_mean else None,
                     'gpus': r.total_gpus,
                     'percentiles': _percentiles(r),
+                    **_result_evidence(r),
                 }
 
             for r in ep_pool:
@@ -695,14 +729,14 @@ class ReportAnalyzer:
             by_tput = max(ep_pool, key=lambda r: r.throughput_mean or r.throughput_p90 or 0)
             best_ep_throughput = _ep_entry(by_tput)
 
-            by_ttft = min(ep_pool, key=lambda r: r.ttft_p90 if r.ttft_p90 else 1000000.0)
+            by_ttft = min(ep_pool, key=lambda r: r.ttft_p90)
             best_ep_ttft = _ep_entry(by_ttft)
 
         # --- Aggregated baseline (best across all aggregated results) ---
         aggregated_baseline = None
         agg_tests = all_agg_tests if all_agg_tests else (step6_agg_tests if step6_agg_tests else step8_tests)
         if agg_tests:
-            agg = min(agg_tests, key=lambda r: r.ttft_p90 if r.ttft_p90 else 1000000.0)
+            agg = min(agg_tests, key=lambda r: r.ttft_p90)
             aggregated_baseline = _config_dict(agg)
             aggregated_baseline['replicas'] = agg.total_gpus // agg.tensor_parallelism
 
@@ -729,12 +763,12 @@ class ReportAnalyzer:
                 'config_name': r.display_label,
                 'test_id': r.config_name,
                 'ttft': round(getattr(r, ttft_field), 1),
-                'itl': round(getattr(r, itl_field), 2) if getattr(r, itl_field, None) else None,
+                'itl': _rounded(getattr(r, itl_field, None)),
                 'e2e_p90': round(r.e2e_latency_p90 * 1000, 1) if getattr(r, 'e2e_latency_p90', None) else None,
                 'e2e_p95': round(r.e2e_latency_p95 * 1000, 1) if getattr(r, 'e2e_latency_p95', None) else None,
                 'e2e_p99': round(r.e2e_latency_p99 * 1000, 1) if getattr(r, 'e2e_latency_p99', None) else None,
                 'throughput_mean': round(r.throughput_mean, 2) if r.throughput_mean else None,
-                'throughput': round(getattr(r, tput_field, 0) or 0, 2),
+                'throughput': _rounded(getattr(r, tput_field, None)),
                 'gpus': r.total_gpus,
                 'tp': r.tensor_parallelism if r.architecture == 'aggregated' else ptp,
                 'concurrency': concurrency,
@@ -747,17 +781,18 @@ class ReportAnalyzer:
                     'prefill_tp': ptp,
                     'decode_tp': dtp,
                 })
+            entry.update(_result_evidence(r))
             return entry
 
         def _select_3(valid, ttft_field, tput_field):
             """Select 5 best configs: balanced, lowest_ttft, lowest_itl, highest_tput, most_efficient."""
             itl_field = ttft_field.replace('ttft_', 'itl_')
-            by_balanced = min(valid, key=lambda r: (getattr(r, ttft_field) or 1e9) / (r.throughput_mean or 0.001))
-            by_ttft = min(valid, key=lambda r: getattr(r, ttft_field) or 1e9)
-            itl_valid = [r for r in valid if getattr(r, itl_field, None) and getattr(r, itl_field) > 0]
+            by_balanced = min(valid, key=lambda r: getattr(r, ttft_field) / (r.throughput_mean or r.throughput_p90))
+            by_ttft = min(valid, key=lambda r: getattr(r, ttft_field))
+            itl_valid = [r for r in valid if _latency(getattr(r, itl_field, None))]
             by_itl = min(itl_valid, key=lambda r: getattr(r, itl_field)) if itl_valid else None
-            by_tput = max(valid, key=lambda r: r.throughput_mean or 0)
-            by_eff = max(valid, key=lambda r: (r.throughput_mean or 0) / max(r.total_gpus, 1))
+            by_tput = max(valid, key=lambda r: r.throughput_mean or r.throughput_p90)
+            by_eff = max(valid, key=lambda r: (r.throughput_mean or r.throughput_p90) / r.total_gpus)
             result = {
                 'balanced': _pctl_entry(by_balanced, ttft_field, tput_field),
                 'lowest_ttft': _pctl_entry(by_ttft, ttft_field, tput_field),
@@ -773,13 +808,13 @@ class ReportAnalyzer:
             tput_field = f'throughput_{pctl}'
             pctl_data = {}
             # Use comprehensive pools (all results except calibration/cache sweep)
-            valid_agg = [r for r in all_agg_tests if getattr(r, ttft_field, None)]
+            valid_agg = [r for r in all_agg_tests if _latency(getattr(r, ttft_field, None))]
             if valid_agg:
                 pctl_data['aggregated'] = _select_3(valid_agg, ttft_field, tput_field)
-            valid_pd = [r for r in all_pd_tests if getattr(r, ttft_field, None)]
+            valid_pd = [r for r in all_pd_tests if _latency(getattr(r, ttft_field, None))]
             if valid_pd:
                 pctl_data['pd'] = _select_3(valid_pd, ttft_field, tput_field)
-            valid_ep = [r for r in all_ep_tests if getattr(r, ttft_field, None)]
+            valid_ep = [r for r in all_ep_tests if _latency(getattr(r, ttft_field, None))]
             if valid_ep:
                 pctl_data['ep'] = _select_3(valid_ep, ttft_field, tput_field)
             if pctl_data:
@@ -791,9 +826,13 @@ class ReportAnalyzer:
         best_pd_primary = best_pd_balanced or best_pd_ttft
         pd_is_better_ttft = True
         if best_pd_primary and aggregated_baseline:
-            agg_p99 = aggregated_baseline.get('ttft_p99') or aggregated_baseline['ttft_p90']
-            pd_p99 = best_pd_primary.get('ttft_p99') or best_pd_primary['ttft_p90']
-            if agg_p99 < pd_p99:
+            agg_p99 = aggregated_baseline.get('ttft_p99')
+            pd_p99 = best_pd_primary.get('ttft_p99')
+            # Compare the same measured percentile on both sides. The card's
+            # named P90 objective remains available when either P99 is unknown.
+            if _latency(agg_p99) and _latency(pd_p99):
+                pd_is_better_ttft = pd_p99 <= agg_p99
+            elif aggregated_baseline['ttft_p90'] < best_pd_primary['ttft_p90']:
                 pd_is_better_ttft = False
 
         if best_pd_primary:
@@ -869,8 +908,9 @@ class ReportAnalyzer:
             agg_ttft = aggregated_baseline['ttft_p90']
             pd_tput = best_pd_ttft['throughput_p90']
             agg_tput = aggregated_baseline['throughput_p90']
-            pd_p99 = best_pd_ttft.get('ttft_p99') or pd_ttft
-            agg_p99 = aggregated_baseline.get('ttft_p99') or agg_ttft
+            pd_p99 = best_pd_ttft.get('ttft_p99')
+            agg_p99 = aggregated_baseline.get('ttft_p99')
+            has_p99 = _latency(pd_p99) and _latency(agg_p99)
             pd_vs_agg = {
                 'pd': best_pd_ttft,
                 'aggregated': aggregated_baseline,
@@ -878,8 +918,8 @@ class ReportAnalyzer:
                 'ttft_diff_pct': round(abs(pd_ttft - agg_ttft) / max(agg_ttft, 0.01) * 100, 1),
                 'throughput_winner': 'PD' if pd_tput >= agg_tput else 'Aggregated',
                 'throughput_diff_pct': round(abs(pd_tput - agg_tput) / max(agg_tput, 0.01) * 100, 1),
-                'ttft_p99_winner': 'PD' if pd_p99 <= agg_p99 else 'Aggregated',
-                'ttft_p99_diff_pct': round(abs(pd_p99 - agg_p99) / max(agg_p99, 0.01) * 100, 1),
+                'ttft_p99_winner': ('PD' if pd_p99 <= agg_p99 else 'Aggregated') if has_p99 else None,
+                'ttft_p99_diff_pct': round(abs(pd_p99 - agg_p99) / max(agg_p99, 0.01) * 100, 1) if has_p99 else None,
             }
 
         # --- EP vs Aggregated comparison data ---
@@ -975,6 +1015,7 @@ class ReportAnalyzer:
                          calibration_results=None):
         """Build chart data dicts for the frontend (no Plotly dependency)."""
         successful = [r for r in results if r.is_successful]
+        eligible = [r for r in results if r.is_ranking_eligible]
         arch_colors = {
             'aggregated': '#1f77b4',
             'pd': '#ff7f0e',
@@ -993,7 +1034,7 @@ class ReportAnalyzer:
             for prefix, (label, color) in role_config.items():
                 pts = sorted(
                     [r for r in calibration_results
-                     if r.config_name.startswith(prefix)],
+                     if r.config_name.startswith(prefix) and r.is_ranking_eligible],
                     key=lambda r: r.total_gpus
                 )
                 if not pts:
@@ -1028,16 +1069,18 @@ class ReportAnalyzer:
 
         # Pareto table still uses real test results
         for p in pareto:
+            if not p.config.is_ranking_eligible:
+                continue
             pareto_data['pareto_table'].append({
                 'config_name': p.config.display_label,
                 'test_id': p.config.config_name,
                 'architecture': (p.config.architecture or 'unknown').upper(),
                 'ttft_p50': round(p.config.ttft_p50, 2) if p.config.ttft_p50 else None,
-                'ttft_p90': round(p.ttft, 2),
+                'ttft_p90': _rounded(p.config.ttft_p90),
                 'ttft_p95': round(p.config.ttft_p95, 2) if p.config.ttft_p95 else None,
-                'ttft_p99': round(p.config.ttft_p99, 2) if p.config.ttft_p99 else None,
+                'ttft_p99': _rounded(p.config.ttft_p99),
                 'throughput_p50': round(p.config.throughput_p50, 2) if p.config.throughput_p50 else None,
-                'throughput_p90': round(p.throughput, 2),
+                'throughput_p90': _rounded(p.config.throughput_p90),
                 'throughput_p95': round(p.config.throughput_p95, 2) if p.config.throughput_p95 else None,
                 'throughput_p99': round(p.config.throughput_p99, 2) if p.config.throughput_p99 else None,
                 'itl_p50': round(p.config.itl_p50, 2) if p.config.itl_p50 else None,
@@ -1046,6 +1089,11 @@ class ReportAnalyzer:
                 'itl_p99': round(p.config.itl_p99, 2) if p.config.itl_p99 else None,
                 'gpus': p.cost,
                 'efficiency': round(p.efficiency, 3),
+                'test_config_id': p.config.id,
+                'latency_metric': p.metric,
+                'latency_value': p.ttft,
+                'throughput_metric': p.throughput_metric,
+                'throughput_value': p.throughput,
             })
         charts['pareto'] = pareto_data
 
@@ -1075,7 +1123,7 @@ class ReportAnalyzer:
         # --- Efficiency bar chart ---
         eff_data = {'configs': [], 'values': [], 'colors': [], 'test_ids': []}
         if successful:
-            core_successful = [r for r in successful if not r.config_name.startswith(('step11-', 'step12-', 'step13-'))]
+            core_successful = [r for r in eligible if not r.config_name.startswith(('step11-', 'step12-', 'step13-'))]
             with_eff = sorted(
                 [(r.display_label, (r.throughput_mean or r.throughput_p90) / r.total_gpus, r.architecture, r.config_name) for r in core_successful],
                 key=lambda x: x[1], reverse=True
@@ -1089,7 +1137,7 @@ class ReportAnalyzer:
         # --- Per-user token throughput bar chart ---
         per_user_data = {'configs': [], 'values': [], 'colors': [], 'test_ids': []}
         if successful:
-            core_successful = [r for r in successful if not r.config_name.startswith(('step11-', 'step12-', 'step13-'))]
+            core_successful = [r for r in eligible if not r.config_name.startswith(('step11-', 'step12-', 'step13-'))]
             def _get_num_users(r):
                 try:
                     import json as _j
@@ -1241,6 +1289,7 @@ class ReportAnalyzer:
         Step 11 re-tests the best configs at a sustainable QPS when the cluster
         was overloaded. Handles PD, EP, and Aggregated results.
         """
+        step10_results = [r for r in (step10_results or []) if r.is_ranking_eligible]
         if not step10_results:
             return None
 
@@ -1307,6 +1356,7 @@ class ReportAnalyzer:
                 'itl_p95': round(r.itl_p95, 2) if r.itl_p95 else None,
                 'itl_p99': round(r.itl_p99, 2) if r.itl_p99 else None,
                 'gpus': r.total_gpus,
+                **_result_evidence(r),
             }
 
         if step10_pd:
@@ -1379,14 +1429,14 @@ class ReportAnalyzer:
 
     def _get_output_tps(self, r):
         """Extract output_tps_mean from result object or metrics_json."""
-        if getattr(r, 'output_tps_mean', None):
+        if valid_metric(getattr(r, 'output_tps_mean', None), positive=True):
             return round(r.output_tps_mean, 2)
         if r.metrics_json:
             try:
                 import json as _j
                 mj = _j.loads(r.metrics_json) if isinstance(r.metrics_json, str) else r.metrics_json
                 v = mj.get('output_tps_mean')
-                if v:
+                if valid_metric(v, positive=True):
                     return round(v, 2)
             except Exception:
                 pass
@@ -1433,7 +1483,7 @@ class ReportAnalyzer:
                 'throughput_p95': round(r.throughput_p95, 2) if r.throughput_p95 else None,
                 'throughput_p99': round(r.throughput_p99, 2) if r.throughput_p99 else None,
                 'gpus': r.total_gpus,
-                'efficiency': round(r.throughput_p90 / r.total_gpus, 3),
+                'efficiency': _rounded(r.throughput_p90 / r.total_gpus, 3) if r.total_gpus > 0 else None,
                 'output_tps_mean': self._get_output_tps(r),
                 'prefill_pods': r.prefill_pods,
                 'decode_pods': r.decode_pods,
@@ -1452,6 +1502,8 @@ class ReportAnalyzer:
                 'nixl_degraded': False,
                 'cache_hit_pct': None,
                 'quality': getattr(r, 'quality', 'ok') or 'ok',
+                'test_config_id': r.id,
+                'is_ranking_eligible': r.is_ranking_eligible,
                 'deploy_timing': None,
             })
             if r.metrics_json:
@@ -1523,14 +1575,14 @@ class ReportAnalyzer:
         # Step 2/3 calibration results for the TP sweep Pareto chart
         calibration_results = [
             r for r in results
-            if r.config_name.startswith(('step2', 'step3')) and r.is_successful
+            if r.config_name.startswith(('step2', 'step3')) and r.is_ranking_eligible
         ]
 
         # Step 10 calibrated QPS results + Step 11 EPP results (separate section)
         step10_results = [
             r for r in results
             if (r.config_name.startswith('step9-') or r.config_name.startswith('step10') or r.config_name.startswith('step11-epp-'))
-            and r.is_successful
+            and r.is_ranking_eligible
         ]
 
         pareto = self.calculate_pareto_frontier(test_results)
@@ -1726,7 +1778,7 @@ class ReportAnalyzer:
         # Step 11: EPP tuning results (grouped by architecture)
         epp_tuning_data = None
         has_post_step9 = any(r.config_name.startswith(('step10', 'step11', 'step12', 'step13')) for r in results)
-        epp_results = [r for r in results if r.config_name.startswith('step11-epp-') and r.is_successful]
+        epp_results = [r for r in results if r.config_name.startswith('step11-epp-') and r.is_ranking_eligible]
         if epp_results:
             import json as _json2
             by_arch = {}
@@ -1801,14 +1853,15 @@ class ReportAnalyzer:
             baselines = {}
             non_epp = [r for r in results if not r.config_name.startswith('step11-epp-')
                        and not r.config_name.startswith(('step2', 'step3', 'step9', 'step10'))
-                       and r.is_successful]
+                       and r.is_ranking_eligible]
             for arch_key in by_arch:
                 if arch_key == 'pd':
                     candidates = [r for r in non_epp if r.architecture == 'pd']
                 else:
                     candidates = [r for r in non_epp if r.architecture == 'aggregated']
+                candidates = [r for r in candidates if _latency(r.ttft_p99)]
                 if candidates:
-                    best = min(candidates, key=lambda r: r.ttft_p99 or r.ttft_p90 or float('inf'))
+                    best = min(candidates, key=lambda r: r.ttft_p99)
                     baselines[arch_key] = {
                         'config_name': best.display_label,
                         'ttft_p50': round(best.ttft_p50, 2) if best.ttft_p50 else None,
@@ -1908,7 +1961,7 @@ class ReportAnalyzer:
             }
         elif run_config and run_config.get('epp_benchmark') and has_post_step9:
             skipped = []
-            successful = [r for r in results if r.is_successful and not r.config_name.startswith(('step2', 'step3', 'step9', 'step10', 'step11'))]
+            successful = [r for r in results if r.is_ranking_eligible and not r.config_name.startswith(('step2', 'step3', 'step9', 'step10', 'step11'))]
             for arch_key in ['pd', 'aggregated', 'ep']:
                 if any(r.architecture.lower() == arch_key for r in successful):
                     arch_results_for_key = [r for r in successful if r.architecture.lower() == arch_key]

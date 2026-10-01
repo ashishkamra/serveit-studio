@@ -1,3 +1,4 @@
+# fmt: off
 """Guidellm result parsing and static helpers."""
 
 import logging
@@ -56,7 +57,7 @@ class ParserMixin:
             result.ttft_p50 = ttft_p.get('p50')
             result.ttft_p90 = ttft_p.get('p90')
             result.ttft_p95 = ttft_p.get('p95')
-            result.ttft_p99 = ttft_p.get('p999')
+            result.ttft_p99 = ttft_p.get('p99')
             result.ttft_mean = ttft_dist.get('mean')
             result.ttft_min = ttft_dist.get('min')
             result.ttft_max = ttft_dist.get('max')
@@ -70,7 +71,7 @@ class ParserMixin:
             result.itl_p50 = itl_p.get('p50')
             result.itl_p90 = itl_p.get('p90')
             result.itl_p95 = itl_p.get('p95')
-            result.itl_p99 = itl_p.get('p999')
+            result.itl_p99 = itl_p.get('p99')
             result.itl_mean = itl_dist.get('mean')
             result.itl_min = itl_dist.get('min')
             result.itl_max = itl_dist.get('max')
@@ -103,7 +104,7 @@ class ParserMixin:
             result.tpot_p50 = tpot_p.get('p50')
             result.tpot_p90 = tpot_p.get('p90')
             result.tpot_p95 = tpot_p.get('p95')
-            result.tpot_p99 = tpot_p.get('p999')
+            result.tpot_p99 = tpot_p.get('p99')
 
             # --- E2E Request Latency (seconds) ---
             lat_dist = _get_dist('request_latency')
@@ -112,7 +113,7 @@ class ParserMixin:
             result.e2e_latency_p50 = lat_p.get('p50')
             result.e2e_latency_p90 = lat_p.get('p90')
             result.e2e_latency_p95 = lat_p.get('p95')
-            result.e2e_latency_p99 = lat_p.get('p999')
+            result.e2e_latency_p99 = lat_p.get('p99')
 
             # --- Output Tokens Per Second (decode throughput) ---
             otps_dist = _get_dist('output_tokens_per_second')
@@ -121,7 +122,7 @@ class ParserMixin:
             result.output_tps_p50 = otps_p.get('p50')
             result.output_tps_p90 = otps_p.get('p90')
             result.output_tps_p95 = otps_p.get('p95')
-            result.output_tps_p99 = otps_p.get('p999')
+            result.output_tps_p99 = otps_p.get('p99')
 
             # --- Token Counts ---
             prompt_dist = _get_dist('prompt_token_count')
@@ -283,4 +284,3 @@ class ParserMixin:
 
         except Exception as e:
             logger.debug(f"Failed to profile vLLM memory: {e}")
-
