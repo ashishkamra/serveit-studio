@@ -15,6 +15,18 @@ function recommendationTestIdentity(cfg) {
         ? 'id:' + cfg.test_config_id : 'legacy:' + (cfg.test_id || cfg.config_name || '');
 }
 
+function reportManifestUrl(runId, cfg, type) {
+    const enc = value => encodeURIComponent(String(value)).replace(/'/g, '%27');
+    const hasId = Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0;
+    if (runId == null || (!hasId && !cfg.test_id)) return null;
+    const source = hasId ? 'test/' + cfg.test_config_id : 'config/' + enc(cfg.test_id);
+    return '/api/run/' + enc(runId) + '/' + source + '/manifest/' + enc(type);
+}
+
+function reportManifestLabel(value) {
+    return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function clearReportActions(runId) {
     Object.keys(window._recConfigs || {}).forEach(function(key) {
         if (String(window._recConfigs[key].run_id) === String(runId)) delete window._recConfigs[key];
@@ -141,12 +153,13 @@ function _renderChartsImpl(data, runId, content) {
                 h += '<button onclick="applyReportConfig(\'' + opts.recId + '\')" style="width:100%;background:' + opts.color + '0a;border:1.5px solid ' + opts.color + '40;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:600;color:' + opts.color + ';cursor:pointer;margin-bottom:4px;" onmouseover="this.style.background=\'' + opts.color + '15\'" onmouseout="this.style.background=\'' + opts.color + '0a\'">&#128260; Reuse</button>';
                 h += '<button onclick="showSingleTestModal(\'' + opts.recId + '\')" style="width:100%;background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:6px;padding:5px 8px;font-size:11px;font-weight:600;color:#475569;cursor:pointer;margin-bottom:4px;" onmouseover="this.style.background=\'#f1f5f9\'" onmouseout="this.style.background=\'#f8fafc\'">&#129514; Test</button>';
             }
-            if (opts.manifests && opts.manifests.length && opts.runId && opts.testId) {
+            if (opts.manifests && opts.manifests.length && opts.runId && (opts.testId || opts.testConfigId)) {
                 var _ml = { lws: 'LWS', prefill: 'Prefill LWS', decode: 'Decode LWS', 'epp-configmap': 'EPP Config' };
                 h += '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;">';
                 opts.manifests.forEach(function(t) {
                     if (t.includes('service')) return;
-                    h += '<a href="/api/run/' + opts.runId + '/config/' + opts.testId + '/manifest/' + t + '" target="_blank" style="color:#0ea5e9;font-size:10px;padding:2px 6px;background:#f0f9ff;border-radius:4px;border:1px solid #bae6fd;font-weight:500;text-decoration:none;">' + (_ml[t] || t) + ' &#8595;</a>';
+                    const url = reportManifestUrl(opts.runId, { test_id: opts.testId, test_config_id: opts.testConfigId }, t);
+                    if (url) h += '<a href="' + url + '" target="_blank" style="color:#0ea5e9;font-size:10px;padding:2px 6px;background:#f0f9ff;border-radius:4px;border:1px solid #bae6fd;font-weight:500;text-decoration:none;">' + escapeSource(_ml[t] || t) + ' &#8595;</a>';
                 });
                 h += '</div>';
             }
@@ -173,12 +186,10 @@ function _renderChartsImpl(data, runId, content) {
                tid.indexOf('step11-') !== 0 && tid.indexOf('step12-') !== 0 && tid.indexOf('step13-') !== 0;
     });
 
-    // Build a lookup from test_id -> manifest_types for download links
-    const manifestLookup = {};
+    // Legacy display-name lookup is only for older diagnostic labels.
     const testIdLookup = {};
     (data.all_results || []).forEach(r => {
         const tid = r.test_id || r.config_name;
-        if (r.manifest_types && r.manifest_types.length) manifestLookup[tid] = r.manifest_types;
         testIdLookup[r.config_name] = tid;
     });
 
@@ -305,8 +316,7 @@ function _renderChartsImpl(data, runId, content) {
                 const gpus = cfg.gpus ?? cfg.total_gpus;
                 const tputMean = cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90;
 
-                const recTestId = cfg.test_id || testIdLookup[cfg.config_name] || cfg.config_name;
-                const recManifests = manifestLookup[recTestId] || cfg.manifest_types || [];
+                const recManifests = cfg.manifest_types || (_recResLookup[recommendationTestIdentity(cfg)] || {}).manifest_types || [];
 
                 const badges = [];
                 if (dupNote) badges.push({ text: '+ ' + dupNote, bg: 'rgba(255,255,255,0.2)', color: 'white' });
@@ -419,8 +429,7 @@ function _renderChartsImpl(data, runId, content) {
             const calRecId = recActionId(cfg);
             if (calRecId) window._recConfigs[calRecId] = { ...cfg, run_id: runId, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image, test_settings: cfg.test_settings };
 
-            const calTestId = cfg.test_id || testIdLookup[cfg.config_name] || cfg.config_name;
-            const calManifests = manifestLookup[calTestId] || cfg.manifest_types || [];
+            const calManifests = cfg.manifest_types || (_recResLookup[recommendationTestIdentity(cfg)] || {}).manifest_types || [];
 
             const badges = [];
             if (dupNote) badges.push({ text: '+ ' + dupNote, bg: 'rgba(255,255,255,0.2)', color: 'white' });
@@ -495,8 +504,7 @@ function _renderChartsImpl(data, runId, content) {
             const cacheRecId = recActionId(cfg);
             if (cacheRecId) window._recConfigs[cacheRecId] = { ...cfg, run_id: runId, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image };
 
-            const cacheTestId = cfg.test_id || cfg.config_name;
-            const cacheManifests = manifestLookup[cacheTestId] || [];
+            const cacheManifests = cfg.manifest_types || (_recResLookup[recommendationTestIdentity(cfg)] || {}).manifest_types || [];
 
             const badges = [];
             if (dupNote) badges.push({ text: '+ ' + dupNote, bg: 'rgba(255,255,255,0.2)', color: 'white' });
@@ -914,11 +922,11 @@ function _renderChartsImpl(data, runId, content) {
         charts.pareto.pareto_table.forEach((p, idx) => {
             let manifestLinks = '-';
             const pTestId = p.test_id || testIdLookup[p.config_name] || p.config_name;
-            const mTypes = manifestLookup[pTestId];
+            const mTypes = p.manifest_types || (_recResLookup[recommendationTestIdentity(p)] || {}).manifest_types;
             if (mTypes && mTypes.length) {
                 const mlabels2 = { lws: 'LWS', prefill: 'Prefill LWS', decode: 'Decode LWS', 'epp-configmap': 'EPP Config' };
-                manifestLinks = mTypes.filter(t => !t.includes('service')).map(t => {
-                    return `<a href="/api/run/${runId}/config/${pTestId}/manifest/${t}" title="Download ${t}.yaml" target="_blank" style="color:#0ea5e9; text-decoration:none; font-size:11px; padding:2px 6px; background:#f0f9ff; border-radius:4px; border:1px solid #bae6fd; margin:1px; display:inline-block;">${mlabels2[t] || t} &#8595;</a>`;
+                manifestLinks = mTypes.filter(t => !t.includes('service') && reportManifestUrl(runId, p, t)).map(t => {
+                    return `<a href="${reportManifestUrl(runId, p, t)}" title="Download manifest" target="_blank" style="color:#0ea5e9; text-decoration:none; font-size:11px; padding:2px 6px; background:#f0f9ff; border-radius:4px; border:1px solid #bae6fd; margin:1px; display:inline-block;">${reportManifestLabel(mlabels2[t] || t)} &#8595;</a>`;
                 }).join(' ');
             }
             const borderTop = idx > 0 ? ' border-top:2px solid #cbd5e1;' : '';
@@ -1046,8 +1054,8 @@ function _renderChartsImpl(data, runId, content) {
             let manifestLinks = '-';
             if (r.manifest_types && r.manifest_types.length > 0) {
                 const mlabels = { lws: 'LWS', prefill: 'Prefill LWS', decode: 'Decode LWS', 'epp-configmap': 'EPP Config' };
-                manifestLinks = r.manifest_types.filter(t => !t.includes('service')).map(t => {
-                    return `<a href="/api/run/${runId}/config/${rTestId}/manifest/${t}" title="Download ${t}.yaml" target="_blank" style="color:#0ea5e9; text-decoration:none; font-size:11px; padding:2px 6px; background:#f0f9ff; border-radius:4px; border:1px solid #bae6fd; margin:1px; display:inline-block;">${mlabels[t] || t} &#8595;</a>`;
+                manifestLinks = r.manifest_types.filter(t => !t.includes('service') && reportManifestUrl(runId, r, t)).map(t => {
+                    return `<a href="${reportManifestUrl(runId, r, t)}" title="Download manifest" target="_blank" style="color:#0ea5e9; text-decoration:none; font-size:11px; padding:2px 6px; background:#f0f9ff; border-radius:4px; border:1px solid #bae6fd; margin:1px; display:inline-block;">${reportManifestLabel(mlabels[t] || t)} &#8595;</a>`;
                 }).join(' ');
             }
             const na = 'N/A';
@@ -1624,7 +1632,7 @@ function _renderChartsImpl(data, runId, content) {
                 let mLinks = '-';
                 if (t.manifest_types && t.manifest_types.length && t.test_id) {
                     mLinks = t.manifest_types.filter(mt => !mt.includes('service')).map(mt =>
-                        `<a href="/api/run/${runId}/config/${t.test_id}/manifest/${mt}" title="Download ${mt}.yaml" style="color:#0ea5e9; text-decoration:none; font-size:12px; padding:2px 6px; background:#f0f9ff; border-radius:4px; border:1px solid #bae6fd; margin:1px; display:inline-block;">${mt}</a>`
+                        `<a href="${reportManifestUrl(runId, t, mt)}" title="Download manifest" style="color:#0ea5e9; text-decoration:none; font-size:12px; padding:2px 6px; background:#f0f9ff; border-radius:4px; border:1px solid #bae6fd; margin:1px; display:inline-block;">${reportManifestLabel(mt)}</a>`
                     ).join(' ');
                 }
                 html += `<tr><td style="font-weight:700;">${t.concurrency}</td>`;
@@ -1655,7 +1663,7 @@ function _renderChartsImpl(data, runId, content) {
             let mLinks = '-';
             if (t.manifest_types && t.manifest_types.length && t.test_id) {
                 mLinks = t.manifest_types.filter(mt => !mt.includes('service')).map(mt =>
-                    `<a href="/api/run/${runId}/config/${t.test_id}/manifest/${mt}" title="Download ${mt}.yaml" style="color:#0ea5e9; text-decoration:none; font-size:12px; padding:2px 6px; background:#f0f9ff; border-radius:4px; border:1px solid #bae6fd; margin:1px; display:inline-block;">${mt}</a>`
+                    `<a href="${reportManifestUrl(runId, t, mt)}" title="Download manifest" style="color:#0ea5e9; text-decoration:none; font-size:12px; padding:2px 6px; background:#f0f9ff; border-radius:4px; border:1px solid #bae6fd; margin:1px; display:inline-block;">${reportManifestLabel(mt)}</a>`
                 ).join(' ');
             }
             html += `<tr><td>${t.architecture}</td><td>${t.trial_number}</td><td>${t.search_phase}</td>`;
@@ -2845,7 +2853,7 @@ function _renderChartsImpl(data, runId, content) {
                 const na = 'N/A';
                 let ml = '-';
                 if (e.manifest_types && e.manifest_types.length > 0) {
-                    ml = e.manifest_types.map(t => `<a href="/api/run/${runId}/config/${e.test_id}/manifest/${t}" style="color:#7c3aed;text-decoration:none;font-size:11px;padding:2px 6px;background:#f5f3ff;border-radius:4px;border:1px solid #c4b5fd;display:inline-block;">${t}</a>`).join(' ');
+                    ml = e.manifest_types.filter(t => reportManifestUrl(runId, e, t)).map(t => `<a href="${reportManifestUrl(runId, e, t)}" style="color:#7c3aed;text-decoration:none;font-size:11px;padding:2px 6px;background:#f5f3ff;border-radius:4px;border:1px solid #c4b5fd;display:inline-block;">${reportManifestLabel(t)}</a>`).join(' ');
                 }
                 const label = isBase ? `<span style="color:#94a3b8;">${e.name}</span>` : `<strong>${e.name}</strong>`;
                 eppHtml += `<tr${cls}><td>${label}${isBest ? ' ⭐' : ''}</td><td>${wStr}</td>`;

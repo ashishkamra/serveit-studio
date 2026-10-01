@@ -277,14 +277,14 @@ for (const renderer of ['live', 'export']) {
         }
     });
 
-    test(`${renderer}: numeric provenance retains the legacy manifest route and recorded concurrency copy`, () => {
+    test(`${renderer}: numeric provenance uses immutable manifests and recorded concurrency copy`, () => {
         const html = harness()[renderer](fixture(config('legacy-route', { test_config_id: 123, manifest_types: ['lws'] })));
         assert.match(html, /Source run: 42; test: legacy-route; test config ID: 123/);
         assert.match(html, /Recorded c=7/);
         assert.match(html, /not measured average concurrency/);
         assert.doesNotMatch(html, /at its actual concurrency/);
-        if (renderer === 'live') assert.match(html, /\/config\/legacy-route\/manifest\/lws/);
-        else assert.match(html, /dlManifest\('legacy-route','lws'\)/);
+        if (renderer === 'live') assert.match(html, /\/test\/123\/manifest\/lws/);
+        else assert.match(html, /dlManifest\('legacy-route','lws',123\)/);
     });
 }
 
@@ -321,3 +321,128 @@ test('live: same legacy ID with different immutable IDs has separate action bind
     h.context.clearReportActions('42');
     assert.deepEqual(Object.keys(h.context.window._recConfigs), [otherKey]);
 });
+
+function exportRuntime(data) {
+    const h = harness();
+    const html = h.export(data);
+    const blobs = [], downloads = [], alerts = [];
+    const context = vm.createContext({
+        console, Blob, setTimeout() {},
+        document: {
+            getElementById() { return null; }, querySelectorAll() { return []; },
+            createElement() { return { click() { downloads.push(this.download); } }; },
+        },
+        URL: { createObjectURL(blob) { blobs.push(blob); return 'blob:manifest'; }, revokeObjectURL() {} },
+        alert(message) { alerts.push(message); },
+    });
+    for (const [, script] of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+        new vm.Script(script).runInContext(context, { timeout: 1000 });
+    }
+    return { h, html, context, blobs, downloads, alerts };
+}
+
+test('export: immutable manifest downloads never merge equal legacy names or fall back from a missing ID', async () => {
+    const first = config('shared', { test_config_id: 101, architecture: 'AGGREGATED', manifest_types: ['lws'], manifests: { lws: 'kind: First' } });
+    const second = config('shared', { ...first, test_config_id: 102, manifests: { lws: 'kind: Second' } });
+    const data = fixture(first);
+    data.all_results = [first, second];
+    const r = exportRuntime(data);
+    r.context.dlManifest('shared', 'lws', 101);
+    r.context.dlManifest('shared', 'lws', 102);
+    assert.deepEqual(await Promise.all(r.blobs.map(blob => blob.text())), ['kind: First', 'kind: Second']);
+    assert.deepEqual(r.downloads, ['run-42-test-101-lws.yaml', 'run-42-test-102-lws.yaml']);
+    r.context.dlManifest('shared', 'lws', 999);
+    r.context.dlManifest('shared', 'lws');
+    assert.equal(r.downloads.length, 2);
+    assert.equal(r.alerts.length, 2);
+});
+
+test('export: valid legacy manifests still download, but ambiguous legacy identities fail closed', async () => {
+    const first = config('legacy', { architecture: 'AGGREGATED', manifests: { lws: 'legacy-yaml' } });
+    const data = fixture(first);
+    data.all_results = [first];
+    let r = exportRuntime(data);
+    r.context.dlManifest('legacy', 'lws');
+    assert.equal(await r.blobs[0].text(), 'legacy-yaml');
+    assert.deepEqual(r.downloads, ['legacy-lws.yaml']);
+    data.all_results.push({ ...first, manifests: { lws: 'other-yaml' } });
+    r = exportRuntime(data);
+    r.context.dlManifest('legacy', 'lws');
+    assert.equal(r.downloads.length, 0);
+    assert.equal(r.alerts.length, 1);
+});
+
+test('manifest actions encode quoted identities and preserve script-like YAML exactly', async () => {
+    const yaml = 'kind: ConfigMap\ndata: "</script><script>unsafe()</script>"\n# \u2028\u2029 café';
+    const first = config("quoted'&name", { test_config_id: 101, architecture: 'AGGREGATED', manifest_types: ['lws'], manifests: { lws: yaml } });
+    const data = fixture(first);
+    data.all_results = [first];
+    const r = exportRuntime(data);
+    const call = r.h.context.dlManifestCall(first, 'lws');
+    assert.equal(call, "dlManifest('quoted%27%26name','lws',101);return false;");
+    vm.runInContext(call.replace(';return false;', ';'), r.context);
+    assert.equal(await r.blobs[0].text(), yaml);
+    assert.doesNotMatch(r.html, /<script>unsafe\(\)/);
+    assert.equal(r.h.context.reportManifestUrl(42, first, 'lws'), '/api/run/42/test/101/manifest/lws');
+    assert.equal(r.h.context.reportManifestUrl(42, { test_id: first.test_id }, 'lws'), '/api/run/42/config/quoted%27%26name/manifest/lws');
+    assert.equal(r.h.context.reportManifestUrl(42, {}, 'lws'), null);
+});
+
+test('export: own-property checks reject prototype keys and preserve explicit empty text', async () => {
+    const first = config('prototype', { test_config_id: 101, architecture: 'AGGREGATED', manifests: JSON.parse('{"__proto__":"prototype-yaml","empty":""}') });
+    const data = fixture(first);
+    data.all_results = [first];
+    const r = exportRuntime(data);
+    r.context.dlManifest('prototype', '__proto__', 101);
+    r.context.dlManifest('prototype', 'empty', 101);
+    r.context.dlManifest('prototype', 'toString', 101);
+    assert.deepEqual(await Promise.all(r.blobs.map(blob => blob.text())), ['prototype-yaml', '']);
+    assert.equal(r.alerts.length, 1);
+});
+
+test('export: manifest refresh matches immutable IDs rather than the first equal name', async () => {
+    const first = config('shared', { test_config_id: 101, architecture: 'AGGREGATED', manifest_types: ['lws'] });
+    const second = { ...first, test_config_id: 102 };
+    const data = fixture(first);
+    data.all_results = [first, second];
+    const h = harness();
+    h.context.fetch = async () => ({ ok: true, json: async () => ({ all_results: [
+        { ...second, manifests: { lws: 'second-yaml' } }, { ...first, manifests: { lws: 'first-yaml' } },
+    ] }) });
+    h.context.Blob = Blob;
+    h.context.URL = { createObjectURL() { return 'blob:html'; }, revokeObjectURL() {} };
+    h.context.document.createElement = () => ({ click() {} });
+    await h.context.downloadHTMLReport(42, data);
+    assert.equal(first.manifests.lws, 'first-yaml');
+    assert.equal(second.manifests.lws, 'second-yaml');
+});
+
+test('live: a source with no manifests cannot borrow downloads from another test sharing its name', () => {
+    const first = config('shared', { test_config_id: 101 });
+    const data = fixture(first);
+    data.all_results = [{ ...first }, { ...first, test_config_id: 102, manifest_types: ['lws'] }];
+    const html = harness().live(data);
+    const recommendation = html.split('data-subtab-pane="recommendation">')[1].split('<div class="report-subtab-pane"')[0];
+    assert.doesNotMatch(recommendation, /\/test\/101\/manifest/);
+    assert.match(html, /\/test\/102\/manifest\/lws/);
+});
+
+for (const key of ['normal', 'calibrated_best', 'cache_sweep_best']) {
+    test(`${key}: live/export manifest links use the selected immutable source`, () => {
+        const first = config('shared', { test_config_id: 101 });
+        const source = { ...first, architecture: 'AGGREGATED', manifest_types: ['lws', 'service'], manifests: { lws: 'own-yaml' } };
+        const data = fixture(first);
+        data.all_results = [source, { ...source, test_config_id: 102, manifests: { lws: 'wrong-yaml' } }];
+        if (key !== 'normal') {
+            data.recommendation.best_by_percentile = {};
+            data.summary[key] = { balanced: first };
+        }
+        const h = harness();
+        const live = h.live(data).split('data-subtab-pane="recommendation">')[1].split('<div class="report-subtab-pane"')[0];
+        const exported = h.export(data).split('<div id="dl-pane-rec"')[1].split('<div id="dl-pane-')[0];
+        assert.match(live, /\/test\/101\/manifest\/lws/);
+        assert.match(exported, /dlManifest\('shared','lws',101\)/);
+        assert.doesNotMatch(live, /\/test\/102\/manifest\/lws|\/manifest\/service/);
+        assert.doesNotMatch(exported, /dlManifest\('shared','lws',102\)|dlManifest\('shared','service'/);
+    });
+}

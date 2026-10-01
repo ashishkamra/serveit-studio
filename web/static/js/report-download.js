@@ -21,7 +21,8 @@ async function downloadHTMLReport(runId, data) {
                 if (fresh.all_results) {
                     fresh.all_results.forEach(fr => {
                         if (fr.manifests && Object.keys(fr.manifests).length) {
-                            const match = allRes.find(r => r.test_id === fr.test_id);
+                            const matches = allRes.filter(r => dlRecommendationTestIdentity(r) === dlRecommendationTestIdentity(fr));
+                            const match = matches.length === 1 ? matches[0] : null;
                             if (match) match.manifests = fr.manifests;
                         }
                     });
@@ -97,7 +98,7 @@ function buildFullReport(runId, data, charts, rec, summary, best, allRes, hasPD,
         out += `<div id="dl-pane-${t.id}" class="dl-pane${i === 0 ? ' active' : ''}">${t.html}</div>`;
     });
 
-    out += buildChartScript(data, charts, allRes);
+    out += buildChartScript(data, charts, allRes, runId);
     out += '</body></html>';
     return out;
 }
@@ -172,6 +173,29 @@ function dlRecommendationScore(cfg, category) {
 function dlRecommendationTestIdentity(cfg) {
     return Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0
         ? 'id:' + cfg.test_config_id : 'legacy:' + (cfg.test_id || cfg.config_name || '');
+}
+
+function dlManifestCall(cfg, type) {
+    const hasId = Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0;
+    if (!hasId && !cfg.test_id) return null;
+    const enc = value => encodeURIComponent(String(value)).replace(/'/g, '%27');
+    return "dlManifest('" + enc(cfg.test_id || '') + "','" + enc(type) + "'" +
+        (hasId ? ',' + cfg.test_config_id : '') + ');return false;';
+}
+
+function dlManifestLabel(value) {
+    return String(value).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function dlRecommendationManifestLinks(cfg, allRes) {
+    const matches = (allRes || []).filter(r => dlRecommendationTestIdentity(r) === dlRecommendationTestIdentity(cfg));
+    const types = cfg.manifest_types || (matches.length === 1 ? matches[0].manifest_types : null) || [];
+    const labels = { lws: 'LWS', prefill: 'Prefill LWS', decode: 'Decode LWS', 'epp-configmap': 'EPP Config' };
+    const links = types.filter(t => !t.includes('service') && dlManifestCall(cfg, t)).map(t => {
+        const label = Object.prototype.hasOwnProperty.call(labels, t) ? labels[t] : t;
+        return `<a href="#" onclick="${dlManifestCall(cfg, t)}" style="color:#0ea5e9;font-size:10px;padding:2px 6px;background:#f0f9ff;border-radius:4px;border:1px solid #bae6fd;font-weight:500;text-decoration:none;cursor:pointer;">${dlManifestLabel(label)} &#8595;</a>`;
+    });
+    return links.length ? '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #f1f5f9;display:flex;flex-wrap:wrap;gap:4px;">' + links.join('') + '</div>' : '';
 }
 
 function dlRecommendationTable(cfg, runId) {
@@ -307,17 +331,7 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
             }
             // Every metric comes from the selected test, never another percentile's winner.
             s += dlRecommendationTable(cfg, runId);
-            // Manifest links
-            const mTypes = cfg.manifest_types || [];
-            if (mTypes.length && cfg.test_id) {
-                const ml = { lws: 'LWS', prefill: 'Prefill LWS', decode: 'Decode LWS', 'epp-configmap': 'EPP Config' };
-                s += '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #f1f5f9;display:flex;flex-wrap:wrap;gap:4px;">';
-                mTypes.filter(t => !t.includes('service')).forEach(t => {
-                    const tid = cfg.test_id;
-                    s += `<a href="#" onclick="dlManifest('${tid}','${t}');return false;" style="color:#0ea5e9;font-size:10px;padding:2px 6px;background:#f0f9ff;border-radius:4px;border:1px solid #bae6fd;font-weight:500;text-decoration:none;cursor:pointer;">${ml[t] || t} &#8595;</a>`;
-                });
-                s += '</div>';
-            }
+            s += dlRecommendationManifestLinks(cfg, allRes);
             s += '</div></div>';
         });
 
@@ -646,9 +660,9 @@ function buildCfgSection(runId, data, charts, allRes, hasPD) {
             const na = 'N/A';
             const eppBadge = (r.test_id && r.test_id.startsWith('step11-epp-')) ? ' <span style="background:#7c3aed;color:white;font-size:0.65em;padding:1px 5px;border-radius:3px;">EPP TUNED</span>' : '';
             let manifestLinks = '-';
-            if (r.manifest_types && r.manifest_types.length > 0) {
+            if (r.manifest_types && r.manifest_types.length > 0 && dlManifestCall(r, r.manifest_types[0])) {
                 manifestLinks = r.manifest_types.filter(t => !t.includes('service')).map(t => {
-                    return `<a href="#" onclick="dlManifest('${r.test_id}','${t}');return false;" title="Download ${t}.yaml" style="color:#0ea5e9;text-decoration:none;font-size:11px;padding:2px 6px;background:#f0f9ff;border-radius:4px;border:1px solid #bae6fd;display:inline-block;margin:1px;cursor:pointer;">${mlabels[t] || t} &#8595;</a>`;
+                    return `<a href="#" onclick="${dlManifestCall(r, t)}" title="Download manifest" style="color:#0ea5e9;text-decoration:none;font-size:11px;padding:2px 6px;background:#f0f9ff;border-radius:4px;border:1px solid #bae6fd;display:inline-block;margin:1px;cursor:pointer;">${dlManifestLabel(mlabels[t] || t)} &#8595;</a>`;
                 }).join(' ');
             }
             const tputMean = r.throughput_mean ?? r.throughput_p90 ?? na;
@@ -871,6 +885,7 @@ function buildCalRecCards(data, runId) {
                 s += `<div style="font-size:0.8em;color:#475569;margin-bottom:4px;"><span>vLLM: <strong style="color:#3b82f6;">${Math.round(calVllmTps).toLocaleString()} tok/s</strong> <span style="font-size:0.85em;color:#94a3b8;">(server total)</span></span></div>`;
             }
             s += dlRecommendationTable(cfg, runId);
+            s += dlRecommendationManifestLinks(cfg, data.all_results);
             s += '</div></div>';
         });
 
@@ -943,6 +958,7 @@ function buildCacheRecCards(data, runId) {
             s += `<div style="font-size:0.8em;color:#475569;margin-bottom:4px;"><span>vLLM: <strong style="color:#7c3aed;">${Math.round(cfg.vllm_tps).toLocaleString()} tok/s</strong> <span style="font-size:0.85em;color:#94a3b8;">(server total)</span></span></div>`;
         }
         s += dlRecommendationTable(cfg, runId);
+        s += dlRecommendationManifestLinks(cfg, data.all_results);
         s += '</div></div>';
     });
 
@@ -1710,13 +1726,13 @@ function buildParetoFrontierSection(data, allRes) {
 }
 
 // ── Chart Rendering Script ──────────────────────────────────────────────────
-function buildChartScript(data, charts, allRes) {
+function buildChartScript(data, charts, allRes, runId) {
     let s = '<script>';
     s += `function switchDlTab(id){document.querySelectorAll('.dl-tab').forEach(function(t){t.classList.remove('active')});document.querySelectorAll('.dl-pane').forEach(function(p){p.classList.remove('active')});var tab=document.querySelector('.dl-tab[onclick*=\"'+id+'\"]');if(tab)tab.classList.add('active');var pane=document.getElementById('dl-pane-'+id);if(pane){pane.classList.add('active');pane.querySelectorAll('[class*="js-plotly"]').forEach(function(p){Plotly.Plots.resize(p)});}}`;
     s += 'function sortReportTable(tableId,colIdx,type){var table=document.getElementById(tableId);if(!table)return;var rows=Array.from(table.querySelectorAll("tr")).slice(1);var baselineRows=rows.filter(function(r){return r.classList.contains("baseline-row")});var dataRows=rows.filter(function(r){return !r.classList.contains("baseline-row")});var dir=table.getAttribute("data-sort-col")===String(colIdx)&&table.getAttribute("data-sort-dir")==="asc"?"desc":"asc";table.setAttribute("data-sort-col",colIdx);table.setAttribute("data-sort-dir",dir);dataRows.sort(function(a,b){var aCell=a.cells[colIdx],bCell=b.cells[colIdx];var aVal,bVal;if(type==="num"){aVal=parseFloat(aCell.getAttribute("data-val")||aCell.textContent.replace(/[^0-9.\\-]/g,""))||0;bVal=parseFloat(bCell.getAttribute("data-val")||bCell.textContent.replace(/[^0-9.\\-]/g,""))||0}else{aVal=aCell.textContent.trim().toLowerCase();bVal=bCell.textContent.trim().toLowerCase()}if(aVal<bVal)return dir==="asc"?-1:1;if(aVal>bVal)return dir==="asc"?1:-1;return 0});var tbody=table.querySelector("tbody")||table;dataRows.forEach(function(r){tbody.appendChild(r)});baselineRows.forEach(function(r){tbody.appendChild(r)})}';
     // Escape strings for safe embedding in <script> tags
     function safeJson(obj) {
-        return JSON.stringify(obj).replace(/<\//g, '<\\/').replace(/<!--/g, '<\\!--');
+        return JSON.stringify(obj).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
     }
     // Strip large fields from allRes to keep HTML size manageable
     const arLite = allRes.map(r => {
@@ -1754,14 +1770,22 @@ function buildChartScript(data, charts, allRes) {
     s += 'var cd=' + safeJson(charts) + ';';
     s += 'var ar=' + safeJson(arLite) + ';';
     // Build embedded manifest lookup for offline YAML download
-    const manifestMap = {};
+    const manifestMap = Object.create(null);
+    const identityCounts = new Map();
     allRes.forEach(r => {
-        if (r.manifests && typeof r.manifests === 'object' && Object.keys(r.manifests).length) {
-            manifestMap[r.test_id] = r.manifests;
+        const key = dlRecommendationTestIdentity(r);
+        identityCounts.set(key, (identityCounts.get(key) || 0) + 1);
+    });
+    allRes.forEach(r => {
+        const key = dlRecommendationTestIdentity(r);
+        // Ambiguous legacy payloads remain unavailable instead of picking a winner.
+        if (identityCounts.get(key) === 1 && r.manifests && typeof r.manifests === 'object' && !Array.isArray(r.manifests)) {
+            manifestMap[key] = r.manifests;
         }
     });
-    s += 'var _manifests=' + safeJson(manifestMap) + ';';
-    s += 'function dlManifest(testId,type){var m=_manifests[testId];if(!m||!m[type]){alert("Manifest not available for "+testId+" / "+type);return;}var blob=new Blob([m[type]],{type:"text/yaml"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download=testId+"-"+type+".yaml";a.click();URL.revokeObjectURL(url);}';
+    s += 'var _manifests=JSON.parse(' + safeJson(JSON.stringify(manifestMap)) + ');';
+    s += 'var _manifestRunId=' + safeJson(runId == null ? 'unknown' : runId) + ';';
+    s += 'function dlManifest(testId,type,testConfigId){testId=decodeURIComponent(testId);type=decodeURIComponent(type);var hasId=Number.isSafeInteger(testConfigId)&&testConfigId>0;var key=hasId?"id:"+testConfigId:"legacy:"+testId;var m=Object.prototype.hasOwnProperty.call(_manifests,key)?_manifests[key]:null;if(!m||!Object.prototype.hasOwnProperty.call(m,type)||typeof m[type]!=="string"){alert("Manifest not available for "+testId+" / "+type);return;}var blob=new Blob([m[type]],{type:"text/yaml"});var url=URL.createObjectURL(blob);var a=document.createElement("a");a.href=url;a.download=hasId?"run-"+_manifestRunId+"-test-"+testConfigId+"-"+type.replace(/[^A-Za-z0-9_.-]/g,"_")+".yaml":testId+"-"+type+".yaml";a.click();URL.revokeObjectURL(url);}';
     s += 'var lo={margin:{t:30,b:40,l:50,r:20},height:850,font:{family:"sans-serif"}};';
     s += 'var co={responsive:true};';
     s += 'function _tL(n,a){if(!n||n.indexOf("(")>=0)return n||"";a=(a||"").toUpperCase();if(a==="PD")return n+" (PD)";if(a==="EP")return n+" (EP)";return n+" (AG)"}';
@@ -1773,7 +1797,7 @@ function buildChartScript(data, charts, allRes) {
     // Panes are all visible initially for Plotly rendering; hidden after charts are done
 
     // TP calibration charts — use rec.decode_tp_all / rec.prefill_tp_all
-    s += 'var recData=' + JSON.stringify(data.recommendation || {}) + ';';
+    s += 'var recData=' + safeJson(data.recommendation || {}) + ';';
 
     // Decode TP Sweep (dual-axis: TPSG bars + ITL P90 line)
     s += 'if(recData.decode_tp_all&&recData.decode_tp_all.length&&document.getElementById("tp-dec")){';
@@ -1912,7 +1936,7 @@ function buildChartScript(data, charts, allRes) {
 
     // Step 9 latency search charts (per-percentile per-architecture)
     if (data.latency_search && data.latency_search.by_architecture) {
-        s += 'var lsData=' + JSON.stringify(data.latency_search) + ';';
+        s += 'var lsData=' + safeJson(data.latency_search) + ';';
         s += 'if(lsData&&lsData.by_architecture){var acfg=lsData.arch_configs||{};';
         s += 'var pctls2=[{k:"p90",c:"#3b82f6"},{k:"p95",c:"#f59e0b"},{k:"p99",c:"#ef4444"}];';
         s += 'Object.keys(lsData.by_architecture).forEach(function(arch,ai){';
@@ -1992,7 +2016,7 @@ function buildChartScript(data, charts, allRes) {
 
     // EPP Tuning charts (per-architecture, per-percentile)
     if (data.epp_tuning && data.epp_tuning.by_architecture) {
-        s += 'var eppD=' + JSON.stringify(data.epp_tuning) + ';';
+        s += 'var eppD=' + safeJson(data.epp_tuning) + ';';
         s += 'var pctls3=[{k:"p90",l:"P90",c:"#3b82f6"},{k:"p95",l:"P95",c:"#dc2626"},{k:"p99",l:"P99",c:"#7c3aed"}];';
         s += 'Object.keys(eppD.by_architecture).forEach(function(arch){';
         s += '  var trials=eppD.by_architecture[arch];if(!trials||!trials.length)return;';
@@ -2023,7 +2047,7 @@ function buildChartScript(data, charts, allRes) {
 
     // Concurrency Sweep charts
     if (data.concurrency_sweep && Object.keys(data.concurrency_sweep).length) {
-        s += 'var csData=' + JSON.stringify(data.concurrency_sweep) + ';';
+        s += 'var csData=' + safeJson(data.concurrency_sweep) + ';';
         s += 'var csColors=["#3b82f6","#10b981","#f59e0b","#ef4444","#8b5cf6","#0ea5e9","#ec4899","#14b8a6"];';
         s += '[{k:"p90"},{k:"p95"},{k:"p99"}].forEach(function(pctl){';
         s += '  var el=document.getElementById("dl-sweep-ttft-"+pctl.k);if(!el)return;';
@@ -2248,7 +2272,7 @@ function buildChartScript(data, charts, allRes) {
 
     // Cache Sweep charts — per config
     if (data.cache_sweep && Object.keys(data.cache_sweep).length) {
-        s += 'var cacheSweepData=' + JSON.stringify(data.cache_sweep) + ';';
+        s += 'var cacheSweepData=' + safeJson(data.cache_sweep) + ';';
         s += 'Object.keys(cacheSweepData).forEach(function(cfgKey){';
         s += '  var pts=[].concat(cacheSweepData[cfgKey]).sort(function(a,b){return(a.hit_pct||0)-(b.hit_pct||0)});';
         s += '  if(!pts.length)return;';
@@ -2323,8 +2347,8 @@ function buildChartScript(data, charts, allRes) {
                 delete trafficGroupMap['step3'];
             }
             const trafficLabelMap = {'tp-cal':'TP Calibration','step6':'Aggregated','step7':'PD/EP','step9':'EPP Tuning','step11-sweep':'Concurrency Sweep','step13':'Cache Sweep','other':'Other'};
-            s += 'var trafGrps=' + JSON.stringify(trafficGroupMap) + ';';
-            s += 'var trafLabels=' + JSON.stringify(trafficLabelMap) + ';';
+            s += 'var trafGrps=' + safeJson(trafficGroupMap) + ';';
+            s += 'var trafLabels=' + safeJson(trafficLabelMap) + ';';
             s += '["tp-cal","step6","step7","step9","step11-sweep","step13","other"].forEach(function(gk){';
             s += '  if(!trafGrps[gk])return;';
             s += '  var el=document.getElementById("dl-traffic-"+gk);if(!el)return;';

@@ -2,6 +2,27 @@
 
 Snapshot date: **2026-10-01**.
 
+## Latest continuation: publication and P0.2 artifact identity
+
+The user requested a local commit/push and then continued implementation. After
+explicit destination confirmation, P0.1 was pushed to the **fork** feature branch
+as `b2f2084` (not to openshift-psap or main). The subsequent P0.2 artifact increment
+is implemented/tested but remains local and uncommitted. See
+[implementation record, Section 10](implementation-record.md#10-publication-and-p02-immutable-artifact-increment).
+
+Current checks: **198 full-suite tests**, **120 alternate-order integration
+checks**, **63 Node behavior cases**, and desktop/narrow Chrome checks all pass.
+The existing gevent SSL warning remains. New `web/report_artifacts.py` routes
+require run plus immutable test ID and preserve auth; browser live/downloaded
+artifact actions prefer the same identity. Legacy name routes remain compatible,
+and offline legacy ambiguity fails closed. No stored data was migrated.
+
+The next P0.2 step is the **shared versioned evidence contract and historical
+provenance policy**, not another eligibility or artifact-name fix. Trial payloads
+without immutable IDs still use compatibility routes; do not claim every legacy
+action or all P0.2 acceptance criteria are complete. The earlier updates below
+are chronological snapshots, superseded by this section where noted.
+
 ## Resume update: P0.1 integration checks completed locally
 
 The parent session was recovered from the pending working tree. Read
@@ -20,8 +41,9 @@ The full-suite number includes Node wrappers. A late gevent SSL patch warning
 remains; browser checks are fixture-driven, not a cluster/runtime or accessibility
 certification. Node 20 and hosted CI were not exercised.
 
-No resumed-session changes have been committed/pushed. Review the local diff
-before publication; do not automatically stage/commit on a generic resume request.
+At that snapshot, no resumed-session changes had been committed/pushed; the latest
+continuation above records the later explicit authorization and completed push.
+Review the current local increment before any further publication.
 The four legacy formatter guards were retained to avoid noisy automatic formatting.
 The next implementation tranche is **P0.2**, not another eligibility-field fix.
 Historical repair, a shared contract, SLO-aware selection, full immutable-ID

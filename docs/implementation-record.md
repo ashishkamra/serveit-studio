@@ -2,10 +2,10 @@
 
 Snapshot date: **2026-10-01**.
 
-**Current status: P0.1 integration follow-up validated locally; broader redesign
-remains unfinished.** The recovered working tree's eligibility, identity, and
-tab-lifecycle fixes now pass cross-layer tests, the full isolated suite, and
-fixture-driven Chrome smoke checks. See **Section 9** for the current results.
+**Current status: P0.1 follow-up published; P0.2 immutable artifact increment
+implemented and validated locally; broader redesign remains unfinished.** See
+**Section 10** for publication and current validation. Section 9 records the
+preceding P0.1 integration checks.
 Sections 1–8 preserve the original checkpoint inventory and limitations; their
 validation counts and resolved mismatch notes are historical, not current.
 
@@ -350,3 +350,68 @@ keyboard/screen-reader/accessibility validation. File-level formatter guards in
 four legacy Python modules were reviewed but retained to avoid automatic,
 unrelated whole-file formatting during this focused follow-up. Follow-up changes
 remain local and uncommitted; no new push or PR was made in the resumed session.
+
+## 10. Publication and P0.2 immutable artifact increment
+
+On the user's explicit commit/push request, the P0.1 integration follow-up was
+committed as **`b2f20840a77adf12d8b202aef006007d0a529590`**:
+`Fix: Align report eligibility and validate integration safely`.
+The user clarified that “upstream” meant their tracking **fork**, not the original
+openshift-psap repository. Push and remote SHA verification succeeded at
+`ashishkamra/serveit-studio`, branch `feat/ux-simplification`. No main-branch push,
+upstream-organization push, force push, merge, or PR was performed.
+
+Implementation then continued with this separately reviewable P0.2 increment:
+
+- Added `web/report_artifacts.py`, registered by the real server entry point.
+  New authenticated GET endpoints use **both run ID and immutable database test
+  ID** for listing/downloads. An ID from another run returns 404, never a
+  name-based substitute. Oversized/invalid IDs are handled without SQLite
+  overflow errors; malformed stored JSON/non-text artifacts return 422.
+- Download names expose run/test identity and sanitize the manifest kind.
+  Exact stored UTF-8 YAML is returned as an attachment, with `no-store` and
+  `nosniff`; explicitly empty stored text is preserved. No database mutation,
+  migration, benchmark, or deployment is performed.
+- Live report manifest links now prefer immutable routes where IDs are
+  available. Recommendation artifact types are retrieved from the selected
+  source, not another row's matching name. Existing name-based routes remain
+  unchanged for old clients/payloads; this is not a schema migration. The
+  current database already enforces `UNIQUE(run_id, config_name)`.
+- Offline exports key embedded artifacts by immutable identity, match refreshed
+  payloads by that identity, and refuse ambiguous legacy identities. An unknown
+  numeric ID never falls back to a name. YAML data containing script delimiters,
+  quotes, Unicode separators, or prototype-like keys remains data. Touched
+  action arguments/labels and embedded-script serialization are escaped; this
+  is not a full audit of every legacy report HTML interpolation.
+- Standard, calibrated, and cache recommendation cards share exported artifact
+  link generation, including same-source fallback when the card lacks explicit
+  manifest types. Old valid legacy-only exports can still download YAML.
+- Added 17 authenticated API cases in `test_report_artifacts.py`, import coverage,
+  nine more Node behavior cases, and stronger actual Python-payload/browser
+  regressions. The exported script itself is executed to verify downloaded Blob
+  contents. Browser tests download two distinct YAML bodies from source records
+  sharing a legacy name and verify immutable filenames at both viewports.
+
+### Verified results for this increment
+
+| Check | Result |
+| --- | --- |
+| Full isolated Python 3.11.15 suite | **198 passed, 0 skipped**, existing gevent SSL warning |
+| Imports → API → artifacts → safety in a fresh process | **120 passed, 0 skipped**, same warning |
+| Direct Node recommendation/estimator suites | **63 passed** |
+| Chrome desktop 1440px / narrow 390px | Live/export reports and actual offline YAML downloads passed |
+| Ruff, production JS syntax, whitespace diff | Passed |
+
+An initial parity-test failure was in test scoping: its recommendation assertion
+included diagnostic links. The regression now extracts the recommendation pane
+explicitly, and the full suite passes. Artifact API checks use in-memory SQLite
+and real application auth; browser APIs are fixture-backed. These tests do not
+prove real cluster behavior, hosted CI, Node 20 behavior, or accessibility
+certification. No new production dependency was added.
+
+The artifact increment is **local and uncommitted** after the requested checkpoint
+push. Broader P0.2 work remains: a shared versioned report/evidence model,
+source-backed historical percentile provenance/repair, matched baselines, SLO-aware
+selection, remaining metric/concurrency semantics, and migrating trial payloads
+that still lack immutable IDs. P1/P2/P3 remain planned. See
+[API reference](api-reference.md#manifests) for the new endpoint contract.

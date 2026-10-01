@@ -13,6 +13,7 @@ Business logic lives in:
 
 # IMPORTANT: Monkey patch MUST happen BEFORE any other imports
 from gevent import monkey
+
 monkey.patch_all()
 
 import os
@@ -26,6 +27,7 @@ from web.app_context import app, socketio, DB_PATH, STATE_DIR, OPTIMIZATION_OUTP
 
 # Import and register auth routes
 from web.auth import register_auth_routes
+
 register_auth_routes()
 
 # Import database init and state management
@@ -33,6 +35,7 @@ from web.database import init_db, load_state, cleanup_stale_optimizations
 
 # Import API routes (registers on import via @app.route decorators)
 import web.routes_api  # noqa: F401
+import web.report_artifacts  # noqa: F401
 
 # Import optimization runner (provides log_to_ui, run_optimization_background, etc.)
 import web.optimization  # noqa: F401
@@ -60,12 +63,13 @@ def main():
     print("  Starting web server on port 5000...")
     print("=" * 60)
 
-    socketio.run(app, host='0.0.0.0', port=5000, debug=False)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=False)
 
 
-if __name__ == '__main__':
-    if os.environ.get('INFTUNE_MODE') == 'launcher':
+if __name__ == "__main__":
+    if os.environ.get("INFTUNE_MODE") == "launcher":
         from launcher.app import main as launcher_main
+
         launcher_main()
     else:
         main()

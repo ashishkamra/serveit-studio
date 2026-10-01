@@ -66,7 +66,7 @@ def check_browser(browser, plotly_source, width):
         rec.get_by_role("button", name="Reuse").first.click()
         assert page.evaluate("window.smokeAction.test_config_id") == 1
         assert page.evaluate("window.smokeAction.run_id") == "42"
-        expect(rec.locator('a[href="/api/run/42/config/step6-shared/manifest/lws"]').first).to_be_visible()
+        expect(rec.locator('a[href="/api/run/42/test/1/manifest/lws"]').first).to_be_visible()
 
         page.locator('[data-subtab="estimator-rt1"]').click()
         # Verify keyboard activation of a native action button with real focus.
@@ -115,6 +115,16 @@ def check_browser(browser, plotly_source, width):
         exported.set_content(full_html, wait_until="load")
         expect(exported.locator("#dl-pane-rec")).to_contain_text("test config ID: 1")
         expect(exported.locator("#dl-pane-rec")).to_contain_text("not measured average concurrency")
+        # Both selected tests reuse a legacy name, but their offline downloads
+        # must contain their own YAML rather than the last row with that name.
+        for test_id, yaml_text in ((1, "kind: LeaderWorkerSet"), (2, "kind: SecondSource")):
+            link = exported.locator(
+                f"""#dl-pane-rec a[onclick="dlManifest('step6-shared','lws',{test_id});return false;"]"""
+            ).first
+            with exported.expect_download() as manifest:
+                link.click()
+            assert Path(manifest.value.path()).read_text() == yaml_text
+            assert manifest.value.suggested_filename == f"run-42-test-{test_id}-lws.yaml"
         assert exported.locator(".js-plotly-plot").count() > 0
         exported.locator(".dl-tab").filter(has_text="Configurations").click()
         expect(exported.locator("#dl-pane-cfg")).to_have_class("dl-pane active")

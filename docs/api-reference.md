@@ -464,6 +464,42 @@ Download raw test data archive.
 
 ### Manifests
 
+#### `GET /api/run/<run_id>/test/<test_config_id>/manifests`
+
+List artifacts for an immutable test record. Use `test_config_id` from report
+`all_results` or a recommendation payload, not the legacy string `test_id` or
+a display label. The query checks both run ID and database test ID.
+
+```json
+{"run_id": 42, "test_config_id": 123, "available": ["lws", "epp-configmap"]}
+```
+
+Unknown/mismatched run and test IDs return **404**, not another test's artifacts.
+A known test with no stored artifacts returns **200** with an empty list.
+Malformed stored artifact JSON or non-text YAML values return **422**.
+
+#### `GET /api/run/<run_id>/test/<test_config_id>/manifest/<manifest_type>`
+
+Download the exact stored YAML for that run/test. Authentication is unchanged;
+the route uses the normal session guard. No benchmark or deployment is started.
+
+```bash
+curl -s -b cookies.txt \
+  $BASE_URL/api/run/42/test/123/manifest/lws \
+  -o run-42-test-123-lws.yaml
+```
+
+The response is an `application/x-yaml` attachment named
+`run-<run_id>-test-<test_config_id>-<sanitized_type>.yaml`, with `no-store` and
+`nosniff` headers. Missing tests/types return **404**; invalid stored data returns
+**422**. There is no name-based fallback from an immutable ID.
+
+The following name-based endpoints remain supported for older clients and
+payloads. New report links prefer the immutable endpoints when an ID is present.
+Browser-generated HTML exports embed artifacts under the same immutable identity
+and can download YAML offline; ambiguous legacy identities are unavailable rather
+than silently merged. This does not introduce a historical-data migration.
+
 #### `GET /api/run/<run_id>/config/<config_name>/manifests`
 
 List available manifest types for a test configuration.
@@ -1365,4 +1401,3 @@ curl -s -X POST $BASE_URL/api/config/unlock
 ```
 
 **Response:** `{"success": true, "locked": false}`
-

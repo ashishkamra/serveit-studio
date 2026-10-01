@@ -50,6 +50,7 @@ def generated_report():
             itl_p90=3,
             throughput_p90=20,
             metrics_json=metrics(20, server_tps=200),
+            manifests_yaml='{"lws": "kind: SecondSource"}',
         ),
         # Diagnostic success, but invalid mean. Serialized mean becomes None;
         # canonical eligibility must still block the tempting legacy fallback.
@@ -199,7 +200,9 @@ def test_backend_to_browser_contract(variant):
             assert {value["test_config_id"] for _, value in shared} == {1, 2}
             assert len({key for key, _ in shared}) == 2
             assert all(value["run_id"] == 42 for _, value in shared)
-            assert "/config/step6-shared/manifest/lws" in observed["live"]
-            assert "dlManifest('step6-shared','lws')" in observed["exported"]
+            assert "/test/1/manifest/lws" in observed["live"]
+            assert "/test/2/manifest/lws" in observed["live"]
+            assert "dlManifest('step6-shared','lws',1)" in observed["exported"]
+            assert "dlManifest('step6-shared','lws',2)" in observed["exported"]
             assert "test config ID: 1" in observed["live"]
             assert "test config ID: 2" in observed["exported"]
