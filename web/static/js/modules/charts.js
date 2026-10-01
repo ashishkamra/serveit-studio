@@ -5,8 +5,24 @@ function recommendationMetric(value) {
     return Number.isFinite(value) && value >= 0 ? value : null;
 }
 
+function recommendationEligible(cfg) {
+    // The backend field is canonical; neither spelling's denial may become an allow.
+    return cfg.quality !== 'discard' && cfg.is_ranking_eligible !== false && cfg.recommendation_eligible !== false;
+}
+
+function recommendationTestIdentity(cfg) {
+    return Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0
+        ? 'id:' + cfg.test_config_id : 'legacy:' + (cfg.test_id || cfg.config_name || '');
+}
+
+function clearReportActions(runId) {
+    Object.keys(window._recConfigs || {}).forEach(function(key) {
+        if (String(window._recConfigs[key].run_id) === String(runId)) delete window._recConfigs[key];
+    });
+}
+
 function recommendationScore(cfg, category) {
-    if (cfg.quality === 'discard' || cfg.recommendation_eligible === false) return null;
+    if (!recommendationEligible(cfg)) return null;
     const ttft = recommendationMetric(cfg.ttft_p90 ?? cfg.ttft);
     const itl = recommendationMetric(cfg.itl_p90 ?? cfg.itl);
     const tput = recommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
@@ -45,9 +61,13 @@ function _renderChartsImpl(data, runId, content) {
     let html = '';
     let secRec = '', secTP = '', secCfg = '', secCmp = '', secStep9 = '', secCal = '', secCacheSweep = '', secVLLM = '', secTestCfg = '', secEppTuning = '', secDeployTiming = '', secPareto = '', secTraffic = '';
 
-    // Lookup from test_id/config_name to all_results entry (used across multiple sections)
+    // Keep legacy lookups for older chart sections, but bind cards to immutable IDs.
     const _allResLookup = {};
-    (data.all_results || []).forEach(function(r) { _allResLookup[r.test_id || r.config_name] = r; });
+    const _recResLookup = {};
+    (data.all_results || []).forEach(function(r) {
+        _allResLookup[r.test_id || r.config_name] = r;
+        _recResLookup[recommendationTestIdentity(r)] = r;
+    });
 
     // Shared recommendation card builder
     function _buildRecCard(opts) {
@@ -111,7 +131,8 @@ function _renderChartsImpl(data, runId, content) {
         });
         h += '</table>';
         const escapeSource = v => String(v ?? 'Unknown').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-        h += '<div style="font-size:0.75em;color:#64748b;margin-top:6px;">Source run: ' + escapeSource(opts.runId) + '; test: ' + escapeSource(opts.testId) + '</div>';
+        h += '<div style="font-size:0.75em;color:#64748b;margin-top:6px;">Source run: ' + escapeSource(opts.runId) + '; test: ' + escapeSource(opts.testId) +
+            (Number.isSafeInteger(opts.testConfigId) && opts.testConfigId > 0 ? '; test config ID: ' + opts.testConfigId : '') + '</div>';
 
         // Action buttons
         if (opts.recId || (opts.manifests && opts.manifests.length)) {
@@ -202,10 +223,11 @@ function _renderChartsImpl(data, runId, content) {
     // ============================================================
     // Store recommendation configs for single test re-run
     window._recConfigs = window._recConfigs || {};
+    clearReportActions(runId);
     // Preserve other open reports; never bind an action to a category or display name.
     function recActionId(cfg) {
-        if (runId == null || !cfg.test_id) return null;
-        return 'rec-' + encodeURIComponent(JSON.stringify([String(runId), cfg.test_id])).replace(/'/g, '%27');
+        if (runId == null || (!cfg.test_id && !(Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0))) return null;
+        return 'rec-' + encodeURIComponent(JSON.stringify([String(runId), recommendationTestIdentity(cfg)])).replace(/'/g, '%27');
     }
 
     // RECOMMENDATION — the bottom line
@@ -213,7 +235,7 @@ function _renderChartsImpl(data, runId, content) {
     if (rec && rec.best_by_percentile && Object.keys(rec.best_by_percentile).length) {
         html += '<div class="chart-card" style="border: 2px solid #10b981; border-left: 6px solid #10b981;">';
         html += '<div class="chart-card-header" style="background: linear-gradient(135deg, #059669, #10b981); color: white; font-size: 1.1em; font-weight: 800;">Deployment Recommendation &mdash; User-Defined Workload</div>';
-        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Top tested configurations by category, ranked using P90 latency and mean throughput. Each card shows one test at its actual concurrency; these rankings do not verify all SLOs.</div>';
+        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Top tested configurations by category, ranked using P90 latency and mean throughput. Each card shows one test at its recorded concurrency (not measured average concurrency); these rankings do not verify all SLOs.</div>';
         html += '<div class="chart-card-body" style="padding: 24px;">';
 
         // Recommendation cards — one per category, best across ALL architectures
@@ -259,10 +281,10 @@ function _renderChartsImpl(data, runId, content) {
             const cfg = entry.cfg;
             const archKey = entry.archKey;
 
-            const testId = cfg.test_id || cfg.config_name || '';
+            const testId = recommendationTestIdentity(cfg);
             let dupNote = '';
             if (seen.has(testId)) {
-                const otherLabels = selTypes.filter(s => s.key !== sel.key && globalBest[s.key] && (globalBest[s.key].cfg.test_id || globalBest[s.key].cfg.config_name) === testId).map(s => s.label);
+                const otherLabels = selTypes.filter(s => s.key !== sel.key && globalBest[s.key] && recommendationTestIdentity(globalBest[s.key].cfg) === testId).map(s => s.label);
                 if (otherLabels.length) dupNote = otherLabels.join(', ');
                 else return;
             }
@@ -278,7 +300,7 @@ function _renderChartsImpl(data, runId, content) {
                 }
 
                 const recId = recActionId(cfg);
-                if (recId) window._recConfigs[recId] = { ...cfg, architecture: archKey, model: rec.model, image: (data.run_config || {}).image, test_settings: cfg.test_settings || fallbackTs, epp_config: cfg.epp_config };
+                if (recId) window._recConfigs[recId] = { ...cfg, run_id: runId, architecture: archKey, model: rec.model, image: (data.run_config || {}).image, test_settings: cfg.test_settings || fallbackTs, epp_config: cfg.epp_config };
 
                 const gpus = cfg.gpus ?? cfg.total_gpus;
                 const tputMean = cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90;
@@ -290,7 +312,7 @@ function _renderChartsImpl(data, runId, content) {
                 if (dupNote) badges.push({ text: '+ ' + dupNote, bg: 'rgba(255,255,255,0.2)', color: 'white' });
 
                 // Extract vLLM metrics from all_results
-                const _resEntry = _allResLookup[recTestId] || {};
+                const _resEntry = _recResLookup[recommendationTestIdentity(cfg)] || {};
                 const _mj = _resEntry.metrics_json ? (typeof _resEntry.metrics_json === 'string' ? JSON.parse(_resEntry.metrics_json) : _resEntry.metrics_json) : {};
                 const _pm = _mj.prometheus_metrics || {};
                 const _vllmTps = ((_pm.vllm_prompt_tokens_rate || {}).avg || 0) + ((_pm.vllm_generation_tokens_rate || {}).avg || 0);
@@ -298,7 +320,7 @@ function _renderChartsImpl(data, runId, content) {
                 if (_resEntry.cache_hit_pct != null) badges.push({ text: _resEntry.cache_hit_pct + '% cache hit', bg: 'rgba(255,255,255,0.2)', color: 'white' });
 
                 // All percentile rows belong to cfg, not the independently ranked tail winners.
-                const userConc = 'c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
+                const userConc = 'Recorded c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
                 html += _buildRecCard({
                     label: sel.label, icon: sel.icon, desc: sel.desc, color: sel.color,
                     archKey: archKey, deploy: deploy,
@@ -309,7 +331,7 @@ function _renderChartsImpl(data, runId, content) {
                     e2e_p50: cfg.e2e_p50, e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
                     itl_p50: cfg.itl_p50, itl_p90: cfg.itl_p90 ?? cfg.itl,
                     itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
-                    recId: recId, testId: cfg.test_id,
+                    recId: recId, testId: cfg.test_id, testConfigId: cfg.test_config_id,
                     manifests: recManifests, runId: runId,
                     extraBadges: badges.length ? badges : null
                 });
@@ -358,7 +380,7 @@ function _renderChartsImpl(data, runId, content) {
     if (calBest) {
         html += '<div class="chart-card" style="margin-top:20px; border:2px solid #0ea5e9; border-left:6px solid #0ea5e9;">';
         html += '<div class="chart-card-header" style="background:linear-gradient(135deg,#0ea5e9,#06b6d4); color:white; font-size:1.1em; font-weight:800;">Deployment Recommendation &mdash; Calibrated Load</div>';
-        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Measured performance at tested calibrated concurrency. These results are not a production capacity or SLO guarantee.</div>';
+        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Measured performance at recorded calibrated concurrency, not measured average concurrency. These results are not a production capacity or SLO guarantee.</div>';
         html += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; padding:16px 20px;">`;
 
         const calTypes = [
@@ -371,12 +393,12 @@ function _renderChartsImpl(data, runId, content) {
         const calSeen = new Set();
         calTypes.forEach(sel => {
             const cfg = calBest[sel.key];
-            if (!cfg) return;
+            if (!cfg || recommendationScore(cfg, sel.key) == null) return;
 
-            const calId = cfg.test_id || cfg.config_name || '';
+            const calId = recommendationTestIdentity(cfg);
             let dupNote = '';
             if (calSeen.has(calId)) {
-                const otherLabels = calTypes.filter(s => s.key !== sel.key && calBest[s.key] && (calBest[s.key].test_id || calBest[s.key].config_name) === calId).map(s => s.label);
+                const otherLabels = calTypes.filter(s => s.key !== sel.key && calBest[s.key] && recommendationScore(calBest[s.key], s.key) != null && recommendationTestIdentity(calBest[s.key]) === calId).map(s => s.label);
                 if (otherLabels.length) dupNote = otherLabels.join(', ');
                 else return;
             }
@@ -391,11 +413,11 @@ function _renderChartsImpl(data, runId, content) {
                 deploy = cfg.name || cfg.config_name;
             }
 
-            const concStr = 'c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
+            const concStr = 'Recorded c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
             const tput = cfg.throughput_mean ?? cfg.throughput_p90;
 
             const calRecId = recActionId(cfg);
-            if (calRecId) window._recConfigs[calRecId] = { ...cfg, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image, test_settings: cfg.test_settings };
+            if (calRecId) window._recConfigs[calRecId] = { ...cfg, run_id: runId, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image, test_settings: cfg.test_settings };
 
             const calTestId = cfg.test_id || testIdLookup[cfg.config_name] || cfg.config_name;
             const calManifests = manifestLookup[calTestId] || cfg.manifest_types || [];
@@ -404,7 +426,7 @@ function _renderChartsImpl(data, runId, content) {
             if (dupNote) badges.push({ text: '+ ' + dupNote, bg: 'rgba(255,255,255,0.2)', color: 'white' });
 
             // Extract vLLM metrics
-            const _calResEntry = _allResLookup[calTestId] || {};
+            const _calResEntry = _recResLookup[recommendationTestIdentity(cfg)] || {};
             const _calMj = _calResEntry.metrics_json ? (typeof _calResEntry.metrics_json === 'string' ? JSON.parse(_calResEntry.metrics_json) : _calResEntry.metrics_json) : {};
             const _calPm = _calMj.prometheus_metrics || {};
             const _calVllmTps = ((_calPm.vllm_prompt_tokens_rate || {}).avg || 0) + ((_calPm.vllm_generation_tokens_rate || {}).avg || 0);
@@ -420,7 +442,7 @@ function _renderChartsImpl(data, runId, content) {
                 ttft_p50: cfg.ttft_p50, ttft_p90: cfg.ttft_p90, ttft_p95: cfg.ttft_p95, ttft_p99: cfg.ttft_p99,
                 e2e_p50: cfg.e2e_p50, e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
                 itl_p50: cfg.itl_p50, itl_p90: cfg.itl_p90, itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
-                recId: calRecId, testId: cfg.test_id,
+                recId: calRecId, testId: cfg.test_id, testConfigId: cfg.test_config_id,
                 manifests: calManifests, runId: runId,
                 extraBadges: badges.length ? badges : null
             });
@@ -434,7 +456,7 @@ function _renderChartsImpl(data, runId, content) {
     if (cacheBest) {
         html += '<div class="chart-card" style="margin-top:20px; border:2px solid #8b5cf6; border-left:6px solid #8b5cf6;">';
         html += '<div class="chart-card-header" style="background:linear-gradient(135deg,#7c3aed,#8b5cf6); color:white; font-size:1.1em; font-weight:800;">Deployment Recommendation &mdash; Cache Hit Sweep</div>';
-        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Performance with varying prefix cache hit rates — showing how cache efficiency affects throughput and latency at calibrated load.</div>';
+        html += '<div style="padding:12px 20px 4px; color:#475569; font-size:0.9em;">Performance with varying prefix cache hit rates at recorded calibrated concurrency, not measured average concurrency.</div>';
         html += `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:16px; padding:16px 20px;">`;
 
         const cacheTypes = [
@@ -447,12 +469,12 @@ function _renderChartsImpl(data, runId, content) {
         const cacheSeen = new Set();
         cacheTypes.forEach(sel => {
             const cfg = cacheBest[sel.key];
-            if (!cfg) return;
+            if (!cfg || recommendationScore(cfg, sel.key) == null) return;
 
-            const cacheId = cfg.test_id || cfg.config_name || '';
+            const cacheId = recommendationTestIdentity(cfg);
             let dupNote = '';
             if (cacheSeen.has(cacheId)) {
-                const otherLabels = cacheTypes.filter(s => s.key !== sel.key && cacheBest[s.key] && (cacheBest[s.key].test_id || cacheBest[s.key].config_name) === cacheId).map(s => s.label);
+                const otherLabels = cacheTypes.filter(s => s.key !== sel.key && cacheBest[s.key] && recommendationScore(cacheBest[s.key], s.key) != null && recommendationTestIdentity(cacheBest[s.key]) === cacheId).map(s => s.label);
                 if (otherLabels.length) dupNote = otherLabels.join(', ');
                 else return;
             }
@@ -466,12 +488,12 @@ function _renderChartsImpl(data, runId, content) {
                 deploy = cfg.name || cfg.config_name;
             }
 
-            const concStr = 'c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
+            const concStr = 'Recorded c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
             const tput = cfg.throughput_mean ?? cfg.throughput_p90;
             const cacheStr = cfg.cache_hit_pct != null ? cfg.cache_hit_pct + '% cache hit' : '';
 
             const cacheRecId = recActionId(cfg);
-            if (cacheRecId) window._recConfigs[cacheRecId] = { ...cfg, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image };
+            if (cacheRecId) window._recConfigs[cacheRecId] = { ...cfg, run_id: runId, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image };
 
             const cacheTestId = cfg.test_id || cfg.config_name;
             const cacheManifests = manifestLookup[cacheTestId] || [];
@@ -480,7 +502,7 @@ function _renderChartsImpl(data, runId, content) {
             if (dupNote) badges.push({ text: '+ ' + dupNote, bg: 'rgba(255,255,255,0.2)', color: 'white' });
             if (cacheStr) badges.push({ text: cacheStr, bg: 'rgba(255,255,255,0.2)', color: 'white' });
 
-            const _cacheResEntry = _allResLookup[cacheTestId] || {};
+            const _cacheResEntry = _recResLookup[recommendationTestIdentity(cfg)] || {};
             const _cacheMj = _cacheResEntry.metrics_json ? (typeof _cacheResEntry.metrics_json === 'string' ? JSON.parse(_cacheResEntry.metrics_json) : _cacheResEntry.metrics_json) : {};
             const _cachePm = _cacheMj.prometheus_metrics || {};
             const _cacheVllmTps = ((_cachePm.vllm_prompt_tokens_rate || {}).avg || 0) + ((_cachePm.vllm_generation_tokens_rate || {}).avg || 0);
@@ -494,7 +516,7 @@ function _renderChartsImpl(data, runId, content) {
                 ttft_p50: cfg.ttft_p50, ttft_p90: cfg.ttft_p90, ttft_p95: cfg.ttft_p95, ttft_p99: cfg.ttft_p99,
                 e2e_p50: cfg.e2e_p50, e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
                 itl_p50: cfg.itl_p50, itl_p90: cfg.itl_p90, itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
-                recId: cacheRecId, testId: cfg.test_id,
+                recId: cacheRecId, testId: cfg.test_id, testConfigId: cfg.test_config_id,
                 manifests: cacheManifests, runId: runId,
                 extraBadges: badges.length ? badges : null
             });

@@ -2,6 +2,33 @@
 
 Snapshot date: **2026-10-01**.
 
+## Resume update: P0.1 integration checks completed locally
+
+The parent session was recovered from the pending working tree. Read
+[implementation record, Section 9](implementation-record.md#9-resumed-integration-follow-up-2026-10-01)
+before using the original checkpoint instructions below. The canonical eligibility
+mismatch, estimator exclusion gate, immutable recommendation action identities,
+and tab cleanup are now addressed in local changes, with real backend-to-browser
+payload regressions. The original missing-dependency blockers were resolved in an
+isolated Python 3.11.15 environment.
+
+Current validation: **180 full-suite tests passed with no skips**, **102**
+imports/API/safety checks passed in alternate order, **54 Node behavior tests**
+passed, and real Chrome fixture smoke checks passed at **1440px and 390px** using
+Plotly 2.35.2. Ruff, production JavaScript syntax, and whitespace checks pass.
+The full-suite number includes Node wrappers. A late gevent SSL patch warning
+remains; browser checks are fixture-driven, not a cluster/runtime or accessibility
+certification. Node 20 and hosted CI were not exercised.
+
+No resumed-session changes have been committed/pushed. Review the local diff
+before publication; do not automatically stage/commit on a generic resume request.
+The four legacy formatter guards were retained to avoid noisy automatic formatting.
+The next implementation tranche is **P0.2**, not another eligibility-field fix.
+Historical repair, a shared contract, SLO-aware selection, full immutable-ID
+download routes, and P1/P2/P3 UI changes are still unfinished. The original
+snapshot below remains for architecture/history; its mismatch and validation
+limitations are superseded where explicitly resolved by this update.
+
 ## Start here
 
 You are continuing a partially implemented UX/reporting improvement, not
@@ -13,10 +40,10 @@ starting a new assessment. Read these documents in order:
 3. [Implementation plan](ux-simplification-plan.md): P0.1/P0.2/P1/P2/P3 scope,
    design rationale, and acceptance criteria.
 
-**Do not claim the redesign or P0 release validation is finished.** Targeted
-tests pass, but one field-contract mismatch is known, runtime dependencies are
-missing, and browser/cluster validation has not happened. The user requested a
-handoff checkpoint so another model can continue.
+**Do not claim the redesign or all P0 work is finished.** The original checkpoint
+had a field-contract mismatch and incomplete validation; see the resume update
+above for their resolution. Real cluster validation and the broader roadmap
+remain outside the completed integration tranche.
 
 ## User intent and authorization
 

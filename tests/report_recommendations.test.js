@@ -190,12 +190,12 @@ for (const renderer of ['live', 'export']) {
         for (const key of ['calibrated_best', 'cache_sweep_best']) {
             const data = fixture();
             data.recommendation.best_by_percentile = {};
-            data.summary[key] = { balanced: config('sweep-test', {
+            data.summary[key] = { lowest_ttft: config('sweep-test', {
                 ttft_p50: 0, itl_p50: 0, e2e_p50: 0, throughput_mean: 0, throughput_p90: 999,
                 ttft_p99: undefined, itl_p99: null, e2e_p99: Infinity,
             }) };
             const html = harness()[renderer](data);
-            const selected = card(html, 'Best Balanced');
+            const selected = card(html, 'Lowest TTFT');
             assert.deepEqual(row(selected, 'P50'), ['P50', '0 ms', '0 ms', '0.00 ms']);
             assert.deepEqual(row(selected, 'P99'), ['P99', 'Unknown', 'Unknown', 'Unknown']);
             assert.match(selected, /Mean throughput: <strong>0.00 req\/s/);
@@ -243,6 +243,49 @@ for (const renderer of ['live', 'export']) {
         const unknown = h[renderer](data);
         assert.doesNotMatch(unknown, /dlManifest\('Deployment null'|\/config\/Deployment null\/manifest\//);
     });
+
+    test(`${renderer}: canonical and legacy denials gate normal, calibrated and cache candidates`, () => {
+        for (const flags of [
+            { is_ranking_eligible: false },
+            { is_ranking_eligible: false, recommendation_eligible: true },
+            { is_ranking_eligible: true, recommendation_eligible: false },
+            { recommendation_eligible: false },
+            { quality: 'discard' },
+        ]) {
+            const cfg = config('excluded', flags);
+            const data = fixture(cfg);
+            data.summary.calibrated_best = allCategories(cfg);
+            data.summary.cache_sweep_best = allCategories(cfg);
+            assert.equal(cards(harness()[renderer](data)).length, 0, JSON.stringify(flags));
+        }
+        const cfg = config('warning', { quality: 'warning', is_ranking_eligible: true });
+        assert.equal(cards(harness()[renderer](fixture(cfg))).length, 5);
+    });
+
+    test(`${renderer}: invalid sweep objective scores are not presented as recommendations`, () => {
+        for (const key of ['calibrated_best', 'cache_sweep_best']) {
+            const data = fixture();
+            data.recommendation.best_by_percentile = {};
+            data.summary[key] = {
+                balanced: config('zero-denominator', { throughput_mean: 0 }),
+                lowest_ttft: config('bad-ttft', { ttft_p90: -1 }),
+                lowest_itl: config('bad-itl', { itl_p90: null }),
+                highest_tput: config('bad-tput', { throughput_mean: NaN, throughput_p90: 100 }),
+                most_efficient: config('bad-gpus', { gpus: 0 }),
+            };
+            assert.equal(cards(harness()[renderer](data)).length, 0);
+        }
+    });
+
+    test(`${renderer}: numeric provenance retains the legacy manifest route and recorded concurrency copy`, () => {
+        const html = harness()[renderer](fixture(config('legacy-route', { test_config_id: 123, manifest_types: ['lws'] })));
+        assert.match(html, /Source run: 42; test: legacy-route; test config ID: 123/);
+        assert.match(html, /Recorded c=7/);
+        assert.match(html, /not measured average concurrency/);
+        assert.doesNotMatch(html, /at its actual concurrency/);
+        if (renderer === 'live') assert.match(html, /\/config\/legacy-route\/manifest\/lws/);
+        else assert.match(html, /dlManifest\('legacy-route','lws'\)/);
+    });
 }
 
 test('live: run/test action identities survive another open report with the same categories', () => {
@@ -258,4 +301,23 @@ test('live: run/test action identities survive another open report with the same
     const unknown = h.live(fixture(config(null)), 'run-three');
     assert.doesNotMatch(unknown, /applyReportConfig\(/);
     assert.match(unknown, /Source run: run-three; test: Unknown/);
+});
+
+test('live: same legacy ID with different immutable IDs has separate action bindings and rerender cleanup', () => {
+    const h = harness();
+    const first = config('shared', { test_config_id: 101 });
+    const second = config('shared', { test_config_id: 102, throughput_mean: 80 });
+    const data = fixture(first);
+    data.recommendation.best_by_percentile.p90.pd.highest_tput = second;
+    const html = h.live(data);
+    const keys = [...html.matchAll(/applyReportConfig\('([^']+)'\)/g)].map(m => m[1]);
+    assert.equal(new Set(keys).size, 2);
+    assert.deepEqual(new Set(Object.values(h.context.window._recConfigs).map(r => r.test_config_id)), new Set([101, 102]));
+    const other = h.live(fixture(config('shared', { test_config_id: 101 })), 99);
+    const otherKey = other.match(/applyReportConfig\('([^']+)'\)/)[1];
+    h.live(fixture(second));
+    assert.equal(Object.values(h.context.window._recConfigs).filter(r => r.run_id === 42).length, 1);
+    assert.ok(h.context.window._recConfigs[otherKey]);
+    h.context.clearReportActions('42');
+    assert.deepEqual(Object.keys(h.context.window._recConfigs), [otherKey]);
 });

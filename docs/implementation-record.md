@@ -2,10 +2,12 @@
 
 Snapshot date: **2026-10-01**.
 
-**Status: work-in-progress handoff checkpoint, not a release-ready redesign.**
-The P0.1 reporting-trust implementation is present and its targeted tests pass.
-Integration review, complete runtime testing, and the remaining UX milestones
-are unfinished. Read [model-handoff.md](model-handoff.md) before continuing.
+**Current status: P0.1 integration follow-up validated locally; broader redesign
+remains unfinished.** The recovered working tree's eligibility, identity, and
+tab-lifecycle fixes now pass cross-layer tests, the full isolated suite, and
+fixture-driven Chrome smoke checks. See **Section 9** for the current results.
+Sections 1–8 preserve the original checkpoint inventory and limitations; their
+validation counts and resolved mismatch notes are historical, not current.
 
 ## 1. Request and scope
 
@@ -232,3 +234,119 @@ migrated, no credentials were added to the repository, and no React/PatternFly
 package migration was performed. The seven-step workflow, dominant console,
 launcher layout, and main report tab hierarchy have **not** been redesigned in
 this checkpoint. Existing architecture and expert options remain intact.
+
+## 9. Resumed integration follow-up (2026-10-01)
+
+### Recovered and completed
+
+- Live/export recommendation gates honor canonical `is_ranking_eligible` and
+  compatibility `recommendation_eligible`. Either explicit denial excludes a
+  candidate, including calibrated/cache cards; warning-quality valid rows remain
+  eligible. Objective validation also applies to the sweep cards.
+- Estimator preserves explicit ineligibility as **Excluded** diagnostic rows,
+  never Pass/Best. Known invalid base TTFT and selected penalty latency cannot
+  become passing estimates. Existing zero semantics remain explicit: zero ITL
+  is Unknown for sizing, while measured zero can rank in category cards.
+- Recommendation action identities use run plus immutable `test_config_id` when
+  available, with a legacy fallback. Source labels expose both identities, and
+  card telemetry lookups no longer conflate tests with the same legacy name.
+  Existing manifest routes still require the legacy configuration identifier;
+  this is **not** a complete immutable-ID download/API migration.
+- Rerender/close cleanup removes only the relevant run's action bindings and
+  tab-local estimator caches. Late fetches cannot resurrect closed tabs. Panel
+  IDs and chart suffix are restored even after a renderer throws.
+- Live/export copy distinguishes recorded concurrency from measured average
+  concurrency; estimator displays measured concurrency only with evidence.
+- `test_report_contract.py` and `report_contract_helper.js` feed real
+  `ReportAnalyzer` JSON into checked-in JavaScript renderers, including canonical,
+  deliberately ineligible candidate, and valid legacy variants.
+
+### Test isolation and import-order correction
+
+`tests/conftest.py` redirects databases, state files, output, HOME, model caches,
+and tracking state to a temporary directory before collection. It clears cluster
+credentials and blocks ordinary network/process/persistent-write side effects,
+including explicit gevent boundaries. The lifecycle fixture intercepts only the
+stop route's subprocess boundaries and start dispatch; routes, auth, and
+persistence remain real. These safeguards are **not a security sandbox**; the
+checked-in Node/ESLint subprocesses remain allowed.
+
+An initial full run reported 177 passed / 3 skipped. Running imports before API
+tests exposed ten failures: loading auth first made API clients unauthenticated.
+The API fixtures now load the real server entry point before any request and use
+the real setup/login routes. They no longer skip arbitrary setup/assertion
+failures or set environment paths during collection. A regression verifies start
+dispatch is recorded without scheduling optimization. Safety tests verify real
+stop persistence while destructive commands stay intercepted.
+
+### Current observed validation
+
+| Check | Result |
+| --- | --- |
+| Full `tests/` suite, isolated Python 3.11.15 | **180 passed, 0 skipped**, one gevent warning |
+| Imports → API → safety tests in a fresh process | **102 passed, 0 skipped**, same warning |
+| Node recommendation/estimator behavior suites, Node 22.22.3 | **54 passed, 0 failed/skipped** |
+| Whole-repository Ruff | Passed |
+| Production JS syntax checks / diff whitespace | Passed |
+| Chrome 150.0.7871.100, production Plotly 2.35.2 | Desktop 1440px and narrow 390px smoke checks passed |
+
+The full-suite count includes the Node wrappers; do not double-count their
+underlying 54 cases. The recovered isolated environment at
+`/tmp/serveit-ux-validation` resolves the original missing Flask/gevent import
+blockers. Browser-only Playwright 1.63.0 was installed there, not as a production
+dependency. No OS Python, production requirements, cluster, or stored benchmark
+data was changed.
+
+The remaining warning is gevent's late SSL monkey-patching during pytest imports.
+Tests pass, but this is **not** proof of production TLS behavior. Production
+startup ordering was not changed. Python matches CI's 3.11 series; local Node
+was 22, not CI's 20, and hosted CI was not run.
+
+### Browser scope and reproduction
+
+`tests/report_browser_smoke.py` is optional and standalone (not collected by
+pytest's cluster-safe unit harness). It uses production CSS, real DOM/Plotly and
+Python-produced fixtures. It checks recommendation provenance/action binding,
+legacy manifest URLs, estimator Excluded/Unknown/Best states, native keyboard
+activation, invalid-target cleanup, actual HTML/SVG downloads, execution of the
+downloaded report's chart scripts, and two-run cache/action cleanup. Requests
+are fulfilled with fixtures, and reuse/test dispatch is captured, not executed.
+These are viewport smoke checks, **not** full responsive/accessibility
+certification or a server/cluster end-to-end test.
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  npm_config_cache=/tmp/serveit-ux-npm-cache npm_config_offline=true \
+  /tmp/serveit-ux-validation/bin/python -m pytest \
+  -p no:cacheprovider tests/ -q -rs
+
+node --test tests/report_recommendations.test.js tests/report_estimator.test.js
+python3 -m ruff check .
+node --check web/static/js/modules/charts.js
+node --check web/static/js/modules/report.js
+node --check web/static/js/report-download.js
+git diff --check
+
+# Optional browser checks: development-only playwright and Chrome required.
+# Fetch the pinned Plotly asset separately; the browser run blocks live traffic.
+curl --fail --location --silent --show-error \
+  https://cdn.plot.ly/plotly-2.35.2.min.js \
+  --output /tmp/serveit-ux-plotly-2.35.2.min.js
+PYTHONDONTWRITEBYTECODE=1 /tmp/serveit-ux-validation/bin/python \
+  -m tests.report_browser_smoke --plotly /tmp/serveit-ux-plotly-2.35.2.min.js
+```
+
+For a new environment, use the dependency list in `.github/workflows/ci.yml` and
+an isolated Python 3.11 venv; provision/cache ESLint 8 before the offline command.
+Install Playwright only if running the optional browser script. The `/tmp`
+environment is disposable and is not a repository dependency lockfile.
+
+### Remaining boundaries
+
+P0.2/P1/P2/P3 remain planned, including historical percentile provenance/repair,
+a shared versioned evidence model, matched baselines, uniform SLO selection,
+complete immutable-ID manifest routes, guided-flow/result hierarchy, and manual
+keyboard/screen-reader/accessibility validation. File-level formatter guards in
+four legacy Python modules were reviewed but retained to avoid automatic,
+unrelated whole-file formatting during this focused follow-up. Follow-up changes
+remain local and uncommitted; no new push or PR was made in the resumed session.

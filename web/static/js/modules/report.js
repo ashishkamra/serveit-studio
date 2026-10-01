@@ -105,6 +105,8 @@ function addReportTab(runId) {
             return r.json();
         })
         .then(data => {
+            // A closed tab must not resurrect cached data or action bindings.
+            if (!reportTabs.some(t => t.id === tabId)) return;
             if (data.error) {
                 panel.innerHTML = '<div class="charts-loading">' + data.error + '</div>';
                 return;
@@ -139,12 +141,13 @@ function renderChartsInPanel(data, runId, tabId) {
     panel.id = 'charts-content';
     origContent.id = '_charts-content-swap';
 
-    renderCharts(data, runId);
-
-    // Restore IDs
-    panel.id = 'panel-' + tabId;
-    origContent.id = 'charts-content';
-    _chartSuffix = '';
+    try {
+        renderCharts(data, runId);
+    } finally {
+        panel.id = 'panel-' + tabId;
+        origContent.id = 'charts-content';
+        _chartSuffix = '';
+    }
 }
 
 function updateTabBar() {
@@ -202,10 +205,12 @@ function estimatorAssumptionsHTML() {
         'and per-copy load as the source test, with ideal load balancing and no shared bottlenecks. ' +
         'Fleet-level throughput and latency SLOs are not verified.</p>' +
         '<p>Pass requires finite measured TTFT and ITL at the selected percentiles within both targets. ' +
-        'Missing, non-finite or negative latency is Unknown; zero ITL is also Unknown (it may mean unavailable). ' +
+        'Missing, non-finite, negative or penalty latency (at least 1,000,000 ms) is Unknown; zero ITL is also Unknown (it may mean unavailable). ' +
         'An explicit zero TTFT is accepted. No percentile is substituted. ' +
         'Each source test is kept separately; names are not merged across conditions or runs. ' +
-        'Calibration and discarded tests are excluded. Missing capacity evidence remains diagnostic only in the table, with no sized chart bar. ' +
+        'Calibration and discarded tests are excluded. Explicit ranking ineligibility remains diagnostic only, never Pass or Best. ' +
+        'Recorded concurrency is not measured average concurrency; the latter is shown only when measurement evidence exists. ' +
+        'Missing capacity evidence remains diagnostic only in the table, with no sized chart bar. ' +
         'Best means lowest estimated GPU count among verified feasible points in this report; all ties are highlighted.</p>';
 }
 
@@ -232,7 +237,7 @@ function estimatorTargets(input) {
 }
 
 function estimatorLatencyMeets(value, target, isItl) {
-    if (!Number.isFinite(value) || value < 0 || (isItl && value === 0) || !estimatorPositive(target)) return null;
+    if (!Number.isFinite(value) || value < 0 || value >= 1000000 || (isItl && value === 0) || !estimatorPositive(target)) return null;
     return value <= target;
 }
 
@@ -241,13 +246,18 @@ function estimatorOutcome(r) {
     var ttft = estimatorLatencyMeets(r.ttft_val, r.ttft_target, false);
     var itl = estimatorLatencyMeets(r.itl_val, r.itl_target, true);
     var capacity = Number.isSafeInteger(r.total_gpus) && r.total_gpus > 0;
-    var status = ttft === false || itl === false ? 'Fail' :
+    var invalidBase = r.base_ttft_p90 != null &&
+        (!Number.isFinite(r.base_ttft_p90) || r.base_ttft_p90 < 0 || r.base_ttft_p90 >= 1000000);
+    var excluded = r.is_ranking_eligible === false || r.recommendation_eligible === false ||
+        r.quality === 'discard' || invalidBase || /^step[23](?:-|$)/.test(String(r.test_id || ''));
+    var status = excluded ? 'Excluded' : ttft === false || itl === false ? 'Fail' :
         (ttft === true && itl === true && capacity ? 'Pass' : 'Unknown');
     var label = function(v) { return v === true ? 'Pass' : (v === false ? 'Fail' : 'Unknown'); };
     return {
         status: status, feasible: status === 'Pass',
         ttft: label(ttft), itl: label(itl),
-        text: status + ' (TTFT ' + label(ttft) + '; ITL ' + label(itl) + (capacity ? '' : '; capacity Unknown') + ')',
+        text: status + ' (TTFT ' + label(ttft) + '; ITL ' + label(itl) + (capacity ? '' : '; capacity Unknown') +
+            (excluded ? '; eligibility exclusion' : '') + ')',
     };
 }
 
@@ -270,7 +280,11 @@ function calculateEstimatorResults(allResults, input, runId) {
         var tc = r.test_config || {};
         var row = Object.assign({}, targets, {
             config_name: r.config_name || tid || 'Unnamed configuration',
-            test_id: r.test_id, run_id: r.run_id == null ? runId : r.run_id, source_index: index + 1,
+            test_id: r.test_id, test_config_id: r.test_config_id,
+            run_id: r.run_id == null ? runId : r.run_id, source_index: index + 1,
+            is_ranking_eligible: r.is_ranking_eligible, recommendation_eligible: r.recommendation_eligible,
+            quality: r.quality,
+            base_ttft_p90: r.ttft_p90,
             architecture: String(r.architecture || 'UNKNOWN').toUpperCase(),
             gpus_per_replica: r.gpus, replicas: copies, total_gpus: total,
             measured_tput: estimatorPositive(tput) ? tput : null,
@@ -302,7 +316,8 @@ function estimatorNumber(value, digits) {
 }
 
 function estimatorSource(r) {
-    return 'Run ' + (r.run_id == null ? 'Unknown' : r.run_id) + ' / Test ' + (r.test_id || 'Unknown') + ' / row ' + r.source_index;
+    return 'Run ' + (r.run_id == null ? 'Unknown' : r.run_id) + ' / Test ' + (r.test_id || 'Unknown') +
+        (Number.isSafeInteger(r.test_config_id) && r.test_config_id > 0 ? ' / test config ID ' + r.test_config_id : '') + ' / row ' + r.source_index;
 }
 
 function estimatorConditions(r) {
@@ -349,7 +364,7 @@ function estimatorResultsHTML(results) {
     t += '<p>Target: ' + estimatorNumber(first.target_tput) + ' req/s | TTFT: ' + estimatorNumber(first.ttft_target) +
         ' ms ' + estimatorEscape(first.ttft_pctl.toUpperCase()) + ' | ITL: ' + estimatorNumber(first.itl_target) +
         ' ms ' + estimatorEscape(first.itl_pctl.toUpperCase()) + '</p>';
-    if (bestGpus == null) t += '<p><strong>No verified feasible operating point.</strong> Failed and unknown points are shown for diagnostics, not recommendations.</p>';
+    if (bestGpus == null) t += '<p><strong>No verified feasible operating point.</strong> Failed, unknown and excluded points are shown for diagnostics, not recommendations.</p>';
     t += '<table class="estimator-table" style="margin-top:16px;"><thead><tr><th>Configuration / source</th><th>Arch</th>' +
         '<th>Source conditions</th><th>GPUs / measured deployment</th><th>Measured req/s</th><th>Whole-deployment copies (estimated)</th>' +
         '<th>Total GPUs (estimated)</th><th>TTFT ' + estimatorEscape(first.ttft_pctl.toUpperCase()) + '</th><th>ITL ' +
@@ -382,7 +397,7 @@ function renderEstimatorResults(results, suffix) {
         var outcome = estimatorOutcome(r);
         if (outcome.feasible && r.total_gpus === bestGpus) return '#059669';
         if (outcome.status === 'Fail') return '#ef4444';
-        if (outcome.status === 'Unknown') return '#64748b';
+        if (outcome.status === 'Unknown' || outcome.status === 'Excluded') return '#64748b';
         return '#d97706';
     });
     var positions = results.map(function(r, i) { return i; });
@@ -579,8 +594,11 @@ function switchReportTab(tabId) {
 function closeReportTab(tabId) {
     const idx = reportTabs.findIndex(t => t.id === tabId);
     if (idx === -1) return;
-    reportTabs.splice(idx, 1);
+    const closed = reportTabs.splice(idx, 1)[0];
     delete tabDataCache[tabId];
+    delete _lastEstResults['-' + tabId];
+    if (!closed.isComparison && !reportTabs.some(t => !t.isComparison && String(t.runId) === String(closed.runId)) &&
+        typeof clearReportActions === 'function') clearReportActions(closed.runId);
 
     const panel = document.getElementById('panel-' + tabId);
     if (panel) panel.remove();

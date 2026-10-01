@@ -31,14 +31,20 @@ function harness(points = []) {
     const alerts = [];
     const images = [];
     function element(id) {
-        if (!elements.has(id)) elements.set(id, { id, innerHTML: '', value: '', addEventListener() {} });
+        if (!elements.has(id)) elements.set(id, {
+            id, innerHTML: '', value: '', style: {}, addEventListener() {}, remove() { elements.delete(this.id); },
+            querySelector() { return null; }, appendChild() {},
+        });
         return elements.get(id);
     }
     const context = vm.createContext({
+        window: {},
         document: {
             getElementById: element,
+            querySelector() { return null; },
+            querySelectorAll() { return []; },
             createElement(tag) {
-                assert.equal(tag, 'a');
+                if (tag !== 'a') return element('created-' + elements.size);
                 return { click() { downloads.push({ href: this.href, download: this.download }); } };
             },
         },
@@ -368,4 +374,107 @@ test('all nine constraint combinations agree across actual rendering, chart and 
             await assertExportParity(h);
         }
     }
+});
+
+test('eligibility denials stay diagnostic in table/chart/export, never Pass or Best', async () => {
+    const h = harness([
+        point({ test_id: 'canonical-false', test_config_id: 11, is_ranking_eligible: false, recommendation_eligible: true }),
+        point({ test_id: 'legacy-false', test_config_id: 12, is_ranking_eligible: true, recommendation_eligible: false }),
+        point({ test_id: 'only-legacy-false', recommendation_eligible: false }),
+        point({ test_id: 'legacy-valid' }),
+        point({ test_id: 'warning-valid', quality: 'warning', is_ranking_eligible: true }),
+    ]);
+    const rows = h.run();
+    assert.equal(rows.length, 5);
+    assert.deepEqual(Array.from(rows, r => h.context.estimatorOutcome(r).status), ['Excluded', 'Excluded', 'Excluded', 'Pass', 'Pass']);
+    assert.match(h.html(), /eligibility exclusion/);
+    assert.match(h.html(), /test config ID 11/);
+    assert.equal(bestRows(h.html()).length, 2);
+    assert.ok(bestRows(h.html()).every(r => !r.includes('false')));
+    assert.deepEqual(Array.from(h.plots[0].traces[0].marker.color), ['#64748b', '#64748b', '#64748b', '#059669', '#059669']);
+    rows[0].ttft_meets = rows[0].itl_meets = true;
+    assert.equal(h.context.estimatorOutcome(rows[0]).feasible, false);
+    await assertExportParity(h);
+});
+
+test('known invalid base TTFT cannot pass via a valid selected tail, even in legacy rows', async () => {
+    const h = harness([NaN, Infinity, -1, 1000000, '10', false].map((ttft, i) => point({ test_id: 'invalid-' + i, ttft_p90: ttft })));
+    const rows = h.run();
+    assert.ok(rows.every(r => h.context.estimatorOutcome(r).status === 'Excluded'));
+    assert.equal(bestRows(h.html()).length, 0);
+    assert.match(h.html(), /No verified feasible operating point/);
+    await assertExportParity(h);
+    // Outputs recheck preserved evidence rather than a cached exclusion boolean.
+    rows[0].base_ttft_p90 = 0;
+    assert.equal(h.context.estimatorOutcome(rows[0]).status, 'Pass');
+    rows[0].base_ttft_p90 = -1;
+    assert.equal(h.context.estimatorOutcome(rows[0]).status, 'Excluded');
+});
+
+test('penalty latencies remain Unknown even when oversized targets would numerically pass', () => {
+    const h = harness();
+    for (const field of ['ttft_p99', 'itl_p90']) {
+        const [row] = h.context.calculateEstimatorResults([point({ [field]: 1000000 })], {
+            ...targets, ttft_target: 2000000, itl_target: 2000000,
+        }, 42);
+        assert.equal(h.context.estimatorOutcome(row).status, 'Unknown');
+        assert.equal(h.context.estimatorOutcome(row).feasible, false);
+    }
+});
+
+test('closing a report cleans only its run actions and tab caches, preserving other reports and comparison', () => {
+    const h = harness([point()]);
+    const chartsFile = path.join(__dirname, '../web/static/js/modules/charts.js');
+    new vm.Script(readFileSync(chartsFile, 'utf8'), { filename: chartsFile }).runInContext(h.context);
+    h.setup('-rt2', [point({ test_config_id: 101 })], 99);
+    h.run();
+    h.run('-rt2');
+    h.context.window._recConfigs = {
+        first: { run_id: 42, test_config_id: 101 },
+        second: { run_id: 99, test_config_id: 101 },
+    };
+    h.context.reportTabs.push({ id: 'compare', isComparison: true });
+    h.context.activeTabId = 'rt2';
+    h.context.updateTabBar = () => {};
+    h.context.closeReportTab('compare');
+    assert.ok(h.context.window._recConfigs.first);
+    assert.ok(h.context.window._recConfigs.second);
+    h.context.closeReportTab('rt1');
+    assert.equal(h.context.tabDataCache.rt1, undefined);
+    assert.equal(h.context._lastEstResults['-rt1'], undefined);
+    assert.equal(h.context.window._recConfigs.first, undefined);
+    assert.equal(h.context.window._recConfigs.second.test_config_id, 101);
+    assert.ok(h.context.tabDataCache.rt2);
+    assert.ok(h.context._lastEstResults['-rt2']);
+    h.context.closeReportTab('rt1'); // Closing twice is harmless.
+    assert.ok(h.context.window._recConfigs.second);
+});
+
+test('a late fetch cannot resurrect a closed tab or its action map', async () => {
+    const h = harness();
+    h.context.reportTabs = [];
+    let resolveFetch;
+    h.context.fetch = () => new Promise(resolve => { resolveFetch = resolve; });
+    h.context.updateTabBar = () => {};
+    h.context.switchReportTab = () => {};
+    let renders = 0;
+    h.context.renderChartsInPanel = () => { renders++; };
+    h.context.addReportTab(99);
+    const tabId = h.context.reportTabs[0].id;
+    h.context.closeReportTab(tabId);
+    resolveFetch({ ok: true, json: () => Promise.resolve({ all_results: [point()] }) });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.context.tabDataCache[tabId], undefined);
+    assert.equal(renders, 0);
+});
+
+test('panel IDs and chart suffix are restored even when a renderer throws', () => {
+    const h = harness();
+    const panel = h.element('panel-rt1');
+    const content = h.element('charts-content');
+    h.context.renderCharts = () => { throw new Error('render failed'); };
+    assert.throws(() => h.context.renderChartsInPanel({}, 42, 'rt1'), /render failed/);
+    assert.equal(panel.id, 'panel-rt1');
+    assert.equal(content.id, 'charts-content');
+    assert.equal(h.context._chartSuffix, '');
 });

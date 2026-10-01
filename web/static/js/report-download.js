@@ -155,7 +155,7 @@ function dlRecommendationMetric(value) {
 }
 
 function dlRecommendationScore(cfg, category) {
-    if (cfg.quality === 'discard' || cfg.recommendation_eligible === false) return null;
+    if (cfg.quality === 'discard' || cfg.is_ranking_eligible === false || cfg.recommendation_eligible === false) return null;
     const ttft = dlRecommendationMetric(cfg.ttft_p90 ?? cfg.ttft);
     const itl = dlRecommendationMetric(cfg.itl_p90 ?? cfg.itl);
     const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
@@ -169,6 +169,11 @@ function dlRecommendationScore(cfg, category) {
     return Number.isFinite(score) ? score : null;
 }
 
+function dlRecommendationTestIdentity(cfg) {
+    return Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0
+        ? 'id:' + cfg.test_config_id : 'legacy:' + (cfg.test_id || cfg.config_name || '');
+}
+
 function dlRecommendationTable(cfg, runId) {
     const fmtE2e = v => dlRecommendationMetric(v) != null ? (v >= 1000 ? (v/1000).toFixed(1) + ' s' : Math.round(v) + ' ms') : 'Unknown';
     let s = '<table style="width:100%;font-size:0.8em;border-collapse:collapse;margin-top:6px;">';
@@ -180,7 +185,7 @@ function dlRecommendationTable(cfg, runId) {
     });
     s += '</table>';
     const escapeSource = v => String(v ?? 'Unknown').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    s += `<div style="font-size:0.75em;color:#64748b;margin-top:6px;">Source run: ${escapeSource(runId)}; test: ${escapeSource(cfg.test_id)}</div>`;
+    s += `<div style="font-size:0.75em;color:#64748b;margin-top:6px;">Source run: ${escapeSource(runId)}; test: ${escapeSource(cfg.test_id)}${Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0 ? '; test config ID: ' + cfg.test_config_id : ''}</div>`;
     return s;
 }
 
@@ -249,7 +254,7 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
 
         s += '<div style="border:2px solid #10b981;border-left:6px solid #10b981;border-radius:10px;margin:20px 0;overflow:hidden;">';
         s += '<div style="background:linear-gradient(135deg,#059669,#10b981);padding:14px 20px;font-size:1.1em;font-weight:800;color:white;">Deployment Recommendation &mdash; User-Defined Workload</div>';
-        s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Top tested configurations by category, ranked using P90 latency and mean throughput. Each card shows one test at its actual concurrency; these rankings do not verify all SLOs.</div>';
+        s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Top tested configurations by category, ranked using P90 latency and mean throughput. Each card shows one test at its recorded concurrency (not measured average concurrency); these rankings do not verify all SLOs.</div>';
         s += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;padding:20px;">';
 
         selTypes.forEach(sel => {
@@ -287,10 +292,10 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
             s += `<span>Mean throughput: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
             s += `<span>GPUs: <strong>${gpus}</strong></span>`;
             const userConc = dlRecommendationMetric(cfg.concurrency) ?? 'Unknown';
-            s += `<span style="color:#0ea5e9;font-weight:600;">c=${userConc}</span>`;
+            s += `<span style="color:#0ea5e9;font-weight:600;">Recorded c=${userConc}</span>`;
             s += '</div>';
             // vLLM tok/s line
-            const _dlResEntry = allRes.find(r => (r.test_id || r.config_name) === (cfg.test_id || cfg.config_name)) || {};
+            const _dlResEntry = allRes.find(r => dlRecommendationTestIdentity(r) === dlRecommendationTestIdentity(cfg)) || {};
             const _dlMj = _dlResEntry.metrics_json ? (typeof _dlResEntry.metrics_json === 'string' ? JSON.parse(_dlResEntry.metrics_json) : _dlResEntry.metrics_json) : {};
             const _dlPm = _dlMj.prometheus_metrics || {};
             const _dlVllmTps = ((_dlPm.vllm_prompt_tokens_rate || {}).avg || 0) + ((_dlPm.vllm_generation_tokens_rate || {}).avg || 0);
@@ -819,16 +824,16 @@ function buildCalRecCards(data, runId) {
 
         s += '<div style="border:2px solid #0ea5e9;border-left:6px solid #0ea5e9;border-radius:10px;margin:0 0 20px;overflow:hidden;">';
         s += '<div style="background:linear-gradient(135deg,#0ea5e9,#06b6d4);padding:14px 20px;font-size:1.1em;font-weight:800;color:white;">Deployment Recommendation &mdash; Calibrated Load</div>';
-        s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Measured performance at tested calibrated concurrency. These results are not a production capacity or SLO guarantee.</div>';
+        s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Measured performance at recorded calibrated concurrency, not measured average concurrency. These results are not a production capacity or SLO guarantee.</div>';
         s += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;padding:16px 20px;">';
 
         calTypes.forEach(sel => {
             const cfg = calBest[sel.key];
-            if (!cfg) return;
-            const calId = cfg.test_id || cfg.config_name || '';
+            if (!cfg || dlRecommendationScore(cfg, sel.key) == null) return;
+            const calId = dlRecommendationTestIdentity(cfg);
             let dupNote = '';
             if (calSeen.has(calId)) {
-                const others = calTypes.filter(s2 => s2.key !== sel.key && calBest[s2.key] && (calBest[s2.key].test_id || calBest[s2.key].config_name) === calId).map(s2 => s2.label);
+                const others = calTypes.filter(s2 => s2.key !== sel.key && calBest[s2.key] && dlRecommendationScore(calBest[s2.key], s2.key) != null && dlRecommendationTestIdentity(calBest[s2.key]) === calId).map(s2 => s2.label);
                 if (others.length) dupNote = others.join(', ');
                 else return;
             }
@@ -843,7 +848,7 @@ function buildCalRecCards(data, runId) {
                 deploy = cfg.name || cfg.config_name || '';
             }
             const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput_p90);
-            const concStr = 'c=' + (dlRecommendationMetric(cfg.concurrency) ?? 'Unknown');
+            const concStr = 'Recorded c=' + (dlRecommendationMetric(cfg.concurrency) ?? 'Unknown');
 
             s += '<div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);border:2px solid #cbd5e1;">';
             s += `<div style="background:linear-gradient(135deg,${sel.color},${sel.color}cc);padding:10px 14px;color:white;">`;
@@ -891,16 +896,16 @@ function buildCacheRecCards(data, runId) {
 
     s += '<div style="border:2px solid #8b5cf6;border-left:6px solid #8b5cf6;border-radius:10px;margin:20px 0;overflow:hidden;">';
     s += '<div style="background:linear-gradient(135deg,#7c3aed,#8b5cf6);padding:14px 20px;font-size:1.1em;font-weight:800;color:white;">Deployment Recommendation &mdash; Cache Hit Sweep</div>';
-    s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Performance with varying prefix cache hit rates — showing how cache efficiency affects throughput and latency at calibrated load.</div>';
+    s += '<div style="padding:12px 20px 4px;color:#475569;font-size:0.9em;">Performance with varying prefix cache hit rates at recorded calibrated concurrency, not measured average concurrency.</div>';
     s += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;padding:16px 20px;">';
 
     cacheTypes.forEach(sel => {
         const cfg = cacheBest[sel.key];
-        if (!cfg) return;
-        const cacheId = cfg.test_id || cfg.config_name || '';
+        if (!cfg || dlRecommendationScore(cfg, sel.key) == null) return;
+        const cacheId = dlRecommendationTestIdentity(cfg);
         let dupNote = '';
         if (cacheSeen.has(cacheId)) {
-            const others = cacheTypes.filter(s2 => s2.key !== sel.key && cacheBest[s2.key] && (cacheBest[s2.key].test_id || cacheBest[s2.key].config_name) === cacheId).map(s2 => s2.label);
+            const others = cacheTypes.filter(s2 => s2.key !== sel.key && cacheBest[s2.key] && dlRecommendationScore(cacheBest[s2.key], s2.key) != null && dlRecommendationTestIdentity(cacheBest[s2.key]) === cacheId).map(s2 => s2.label);
             if (others.length) dupNote = others.join(', ');
             else return;
         }
@@ -915,7 +920,7 @@ function buildCacheRecCards(data, runId) {
             deploy = cfg.name || cfg.config_name || '';
         }
         const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput_p90);
-        const concStr = 'c=' + (dlRecommendationMetric(cfg.concurrency) ?? 'Unknown');
+        const concStr = 'Recorded c=' + (dlRecommendationMetric(cfg.concurrency) ?? 'Unknown');
         const cacheStr = cfg.cache_hit_pct != null ? cfg.cache_hit_pct + '% cache hit' : '';
 
         s += '<div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);border:2px solid #cbd5e1;">';
