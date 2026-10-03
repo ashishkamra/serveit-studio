@@ -232,7 +232,7 @@ milestones should be separately reviewable changes, not one large rewrite.
 | --- | --- | --- |
 | Plan and fork setup | Complete | Fork verified; feature branch based on upstream `e5b9c7a` |
 | P0.1 reporting trust foundation | Integration follow-up published | `b2f2084`; original validation in implementation record Section 9 |
-| P0.2 evidence contract and historical data | In progress: artifacts, contract v1, and source retention/lineage published | Artifacts `c821aad`; contract v1 `f4d00d3`; retention `783f923`: 240 suite tests / 84 Node cases plus browser checks. Opt-in historical audit/repair, baselines, uniform SLO selection, and remaining legacy pipelines are pending |
+| P0.2 evidence contract and historical data | In progress: artifacts, contract v1, retention/lineage published; opt-in audit/repair validated locally | Artifacts `c821aad`; contract v1 `f4d00d3`; retention `783f923`; audit/repair increment: 248 suite tests including backup-gated repair regressions. Baselines, uniform SLO selection, and remaining legacy pipelines are pending |
 | P1 recommendation-first experience | Planned | Validate hierarchy before broad visual changes |
 | P2 guided flow and recovery | Planned | Preserve saved state and expert overrides |
 | P3 accessible design-system alignment | Planned | Includes browser and assistive-technology validation |

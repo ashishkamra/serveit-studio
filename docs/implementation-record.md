@@ -2,11 +2,12 @@
 
 Snapshot date: **2026-10-01**.
 
-**Current status: P0.1 published; P0.2 artifacts and shared evidence contract v1
-published; raw-source retention with explicit lineage implemented and validated
-locally; broader redesign remains unfinished.** See **Section 12** for current
-validation. Section 11 records the contract increment; Sections 9–10 preserve
-preceding integration/publication snapshots.
+**Current status: P0.1 published; P0.2 artifacts, shared evidence contract v1,
+and raw-source retention with explicit lineage published; opt-in historical
+audit/repair implemented and validated locally; broader redesign remains
+unfinished.** See **Section 13** for current validation. Section 12 records the
+retention increment, Section 11 the contract; Sections 9–10 preserve preceding
+integration/publication snapshots.
 Sections 1–8 preserve the original checkpoint inventory and limitations; their
 validation counts and resolved mismatch notes are historical, not current.
 
@@ -540,8 +541,8 @@ and the report evidence states that lineage instead of implying it.
 
 Historical rows are unchanged: no raw reference remains `unknown`; raw without a
 lineage record is stored but `unrecorded`. Nothing is backfilled or rewritten on
-read, and a backed-up, opt-in historical audit/repair flow remains the next
-P0.2 tranche. The new `tests/test_report_lineage.py` covers parser byte
+read. The backed-up, opt-in historical audit/repair flow was then implemented in
+Section 13. The new `tests/test_report_lineage.py` covers parser byte
 identity, persistence of both columns, loader/evidence lineage propagation,
 legacy-schema behavior, payload raw-artifact exclusion, and the four-value
 producer contract.
@@ -561,3 +562,47 @@ from, not whether the file is genuine, the window it covers, or workload
 comparability. An actual cluster benchmark was not run; the persistence path was
 exercised with real parser/database/loader/report code against temporary
 databases only.
+
+## 13. Opt-in historical raw-source audit and repair
+
+The next P0.2 step from Section 12 is now implemented: a **read-only audit**
+plus a **backup-gated, explicit opt-in repair** for stored percentile values,
+exposed through the CLI as `serveit report audit` and `serveit report repair`.
+
+- `core/report_audit.py`:
+  - `audit_test_results` compares stored TTFT/ITL percentile columns and
+    throughput percentile columns against the preserved raw references
+    (latency percentiles; request-rate mean). It never writes. Missing or
+    malformed raw references leave rows `no_raw`/unusable rather than
+    guessing.
+  - `repair_test_results` plans by default (dry run: no backup, no writes).
+    With an explicit request it first copies the database file into
+    `<db directory>/backups` (or `--backup-dir`) and requires
+    `PRAGMA integrity_check` to pass on the backup before any write. Only
+    **exact-agreement** changes apply: filling a missing column from a valid
+    raw reference, or correcting a value that exactly disagrees with it. No
+    tolerance; no row without a usable raw reference is touched;
+    `metrics_json` and all other columns are untouched.
+  - Every applied change is recorded in the additive `raw_source_repairs`
+    table (batch id, backup file, run/test identity, field, old/new/raw
+    values, reason, timestamp), keeping repair history inspectable and the
+    backup restorable by hand.
+- `cli/inftune.py`: new `report` command with `audit` (`--db`, `--run-id`,
+  `--json`) and `repair` (`--db`, `--run-id`, `--apply`, `--backup-dir`,
+  `--json`). JSON output is machine-readable; notices are suppressed under
+  `--json`.
+
+### Validation and findings
+
+| Check | Result |
+| --- | --- |
+| Full isolated Python 3.11.15 suite | **248 passed, 0 skipped**, existing gevent SSL warning |
+| Direct audit/repair regressions | **8 passed** (borrowed-P99 correction, missing-value fill, read-only audit, dry run, verified backup, change log, no-raw untouched, legacy schema, CLI flow) |
+| Whole-repository Ruff, production JS syntax, whitespace | Passed |
+
+The new tests verify: the audit writes nothing (file hash unchanged, no
+backup); dry-run repair writes nothing; an applied repair keeps the pre-repair
+values in the verified backup, updates only the targeted columns, leaves
+`metrics_json` byte-identical, logs every change with backup/batch identity,
+and leaves a re-audit clean. Rows without raw references are never modified,
+and a missing database is refused before any backup is created.

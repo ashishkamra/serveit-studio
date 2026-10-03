@@ -2,11 +2,33 @@
 
 Snapshot date: **2026-10-01**.
 
-## Current continuation: raw-source retention with explicit lineage
+## Current continuation: historical raw-source audit and repair
+
+The retention/lineage increment was committed/pushed as **`783f923`** (recorded in
+the continuation below). The next P0.2 step is now implemented and validated, but
+remains **local and uncommitted**: `core/report_audit.py` plus a
+`serveit report` CLI command. Audit is read-only; repair is a dry run by default
+and, when explicitly applied, first backs up the database file (verified with
+`PRAGMA integrity_check`) and logs every exact-agreement change in the additive
+`raw_source_repairs` table. Rows without a preserved raw reference are never
+modified; `metrics_json` and all other columns are untouched. Read
+[implementation record, Section 13](implementation-record.md#13-opt-in-historical-raw-source-audit-and-repair)
+and the [contract](report-evidence-contract.md) before using older snapshots below.
+
+Do not present the repair as a data migration: it only fills or exactly
+corrects the targeted TTFT/ITL/throughput percentile columns from a usable raw
+reference. Remaining P0.2 steps: matched baselines/workload comparability and
+baseline IDs at experiment time; uniform SLO-aware recommendation selection;
+remaining legacy chart semantics; trial identities; Python HTML/Markdown evidence
+migration. Do not call the whole redesign, all P0.2, or every Python/legacy
+chart pipeline complete. Review the current local increment before further
+publication.
+
+## Previous continuation: raw-source retention with explicit lineage
 
 The shared evidence-contract increment was committed/pushed to the confirmed
 fork feature branch as **`f4d00d3`**, and the retention/lineage increment was
-then committed/pushed as **`783f923`** (current branch HEAD). That increment:
+then committed/pushed as **`783f923`**. That increment:
 newly completed benchmarks
 persist their raw source in `guidellm_raw_json` (verbatim parsed bytes) plus a new
 explicit `guidellm_raw_lineage` column — `guidellm_output_file` for guidellm's own

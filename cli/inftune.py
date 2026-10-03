@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# fmt: off
 """
 ServeIt Studio CLI — run LLM inference optimization from the command line.
 
@@ -1038,6 +1039,72 @@ def build_run_parser(parser):
                     help='Suppress progress output')
 
 
+def cmd_report(args):
+    """Audit/repair stored percentiles against preserved raw sources."""
+    from core.report_audit import audit_test_results, repair_test_results
+    import sqlite3
+    import json as _json
+
+    if not os.path.exists(args.db):
+        print(f"Database not found: {args.db}", file=sys.stderr)
+        return 1
+    conn = sqlite3.connect(args.db)
+    conn.row_factory = sqlite3.Row
+    try:
+        if args.report_action == 'audit':
+            result = audit_test_results(conn, args.run_id)
+            summary = {
+                "run_id": args.run_id,
+                "rows_audited": len(result),
+                "rows_no_raw": sum(1 for r in result if r["status"] == "no_raw"),
+                "rows_repairable": sum(1 for r in result if r["status"] == "repairable"),
+                "rows": result,
+            }
+            print(_json.dumps(summary, indent=2, allow_nan=False) if args.json else _format_audit(result))
+        elif args.report_action == 'repair':
+            if not args.apply and not args.json:
+                print("Repair is read-only without --apply. Run 'report audit' to inspect first.")
+            result = repair_test_results(
+                args.db,
+                run_id=args.run_id,
+                backup_dir=args.backup_dir,
+                dry_run=not args.apply,
+            )
+            if args.apply and not args.json:
+                print(f"Backup: {result['backup_file']}")
+            print(_json.dumps(result, indent=2, allow_nan=False) if args.json else _format_repair(result))
+    finally:
+        conn.close()
+    return 0
+
+
+def _format_audit(result):
+    lines = [f"Audited {len(result)} test row(s):"]
+    for row in result:
+        changes = [f for f in row["fields"].values() if f["action"] in ("fill", "correct")]
+        lines.append(
+            f"  test_config_id={row['test_config_id']} run={row['run_id']} "
+            f"status={row['status']} raw={'yes' if row['raw_present'] else 'no'} "
+            f"lineage={row['lineage'] or 'unrecorded'} pending_changes={len(changes)}"
+        )
+        for change in changes:
+            lines.append(f"    {change['action']}: stored={change['stored']} -> {change['raw']}")
+    return "\n".join(lines)
+
+
+def _format_repair(result):
+    lines = [
+        f"{'Planned' if result['dry_run'] else 'Applied'} {len(result['changes'])} change(s) "
+        f"across {result['rows_audited']} audited row(s); {result['rows_no_raw']} row(s) without raw source"
+    ]
+    for change in result["changes"]:
+        lines.append(
+            f"  test_config_id={change['test_config_id']} {change['field']}: "
+            f"{change['old_value']} -> {change['new_value']} ({change['source']})"
+        )
+    return "\n".join(lines)
+
+
 def main():
     top = argparse.ArgumentParser(
         prog='serveit',
@@ -1073,6 +1140,33 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     build_run_parser(run_parser)
 
+    # ── report ───────────────────────────────────────────────────────────
+    report_parser = sub.add_parser('report',
+                                   help='Audit/repair stored results against preserved raw sources')
+    report_sub = report_parser.add_subparsers(dest='report_action')
+
+    audit_p = report_sub.add_parser('audit',
+                                    help='Read-only audit of stored percentiles')
+    audit_p.add_argument('--db', type=str, default='/mnt/storage/serveit.db',
+                         help='Database path (default: /mnt/storage/serveit.db)')
+    audit_p.add_argument('--run-id', type=int, default=None,
+                         help='Restrict the audit to one run')
+    audit_p.add_argument('--json', action='store_true',
+                         help='Emit JSON output')
+
+    repair_p = report_sub.add_parser('repair',
+                                     help='Backup-gated exact-source repair (dry run by default)')
+    repair_p.add_argument('--db', type=str, default='/mnt/storage/serveit.db',
+                          help='Database path (default: /mnt/storage/serveit.db)')
+    repair_p.add_argument('--run-id', type=int, default=None,
+                          help='Restrict the repair to one run')
+    repair_p.add_argument('--apply', action='store_true',
+                          help='Actually apply (backs up the database first); without it this is a dry run')
+    repair_p.add_argument('--backup-dir', type=str, default=None,
+                          help='Backup directory (default: <db directory>/backups)')
+    repair_p.add_argument('--json', action='store_true',
+                          help='Emit JSON output')
+
     # ── Parse ────────────────────────────────────────────────────────────
     args = top.parse_args()
 
@@ -1095,6 +1189,12 @@ def main():
 
     elif args.command == 'run':
         return cmd_run(args)
+
+    elif args.command == 'report':
+        if not args.report_action:
+            report_parser.print_help()
+            return 1
+        return cmd_report(args)
 
     return 0
 

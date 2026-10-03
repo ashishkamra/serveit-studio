@@ -136,12 +136,34 @@ their previous behavior: no raw reference means `unknown`; raw-without-lineage
 means stored but `unrecorded`. Nothing is backfilled or rewritten on read.
 
 Because historical persisted records mostly lack raw evidence, versioned sizing may
-legitimately report no source-verified feasible point. A backed-up, opt-in
-historical audit/repair flow remains a pending P0.2 tranche. Never silently
-rewrite old stored P99 values while generating a report.
+legitimately report no source-verified feasible point. Report generation itself
+never repairs stored values; only the explicit audit/repair flow below may.
 
 The browser report payload never embeds the raw artifact; only the same-test
 evidence descriptors above reference it.
+
+## Historical audit and repair (opt-in)
+
+`core/report_audit.py` provides the audit/repair flow, exposed as
+`serveit report audit` (read-only) and `serveit report repair` (dry run by
+default).
+
+- Audit compares the stored TTFT/ITL percentile columns and throughput
+  percentile columns against the preserved raw references (latency
+  percentiles; request rate mean). It never writes. Missing raw reference
+  stays `no_raw`; malformed raw is treated as absent.
+- Repair applies only **exact-agreement** changes: filling a missing column from
+  a valid raw reference, or correcting a stored value that exactly disagrees
+  with it. No tolerance is used, and no row without a usable raw reference is
+  ever modified. `metrics_json` and every other column are untouched.
+- Repair is backup-gated: the database file is copied to
+  `<db directory>/backups` (or `--backup-dir`) and `PRAGMA integrity_check`
+  must pass on the backup before any write. Without `--apply` it is a dry run
+  with no backup and no writes.
+- Every applied change is logged in the additive `raw_source_repairs` table
+  (batch id, backup file, run/test identity, field, old/new/raw values, reason,
+  timestamp), so a repair batch can be inspected or rolled back by hand from
+  the backup.
 
 ## Shared consumer and sizing policy
 
