@@ -18,6 +18,7 @@ async function downloadHTMLReport(runId, data) {
             const resp = await fetch(`/api/runs/${runId}/charts`);
             if (resp.ok) {
                 const fresh = await resp.json();
+                ServeItReportModel.assertSupported(fresh, runId);
                 if (fresh.all_results) {
                     fresh.all_results.forEach(fr => {
                         if (fr.manifests && Object.keys(fr.manifests).length) {
@@ -47,6 +48,7 @@ async function downloadHTMLReport(runId, data) {
 }
 
 function buildFullReport(runId, data, charts, rec, summary, best, allRes, hasPD, hasVLLM) {
+    ServeItReportModel.assertSupported(data, runId);
     let secRec = buildRecSection(runId, data, rec, summary, best, allRes);
     // Append calibrated load recommendations to the Recommendation tab
     const calRecCards = buildCalRecCards(data, runId);
@@ -88,6 +90,7 @@ function buildFullReport(runId, data, charts, rec, summary, best, allRes, hasPD,
     let out = buildHead(runId);
     out += `<h1>ServeIt Studio Optimization Report &mdash; Run #${runId}</h1>`;
     out += `<p style="color:#64748b;">Generated: ${new Date().toLocaleString()}</p>`;
+    out += ServeItReportModel.noticeHTML(data);
 
     if (dlTabs.length > 1) {
         out += '<div class="dl-tab-bar">';
@@ -150,29 +153,17 @@ function dlPctChange(val, base, lowerBetter) {
 }
 
 // ── Recommendation Tab ──────────────────────────────────────────────────────
-// Keep these rules in sync with recommendationScore in modules/charts.js.
+// Compatibility names delegate to the same model as the live renderer.
 function dlRecommendationMetric(value) {
-    return Number.isFinite(value) && value >= 0 ? value : null;
+    return ServeItReportModel.metric(value);
 }
 
 function dlRecommendationScore(cfg, category) {
-    if (cfg.quality === 'discard' || cfg.is_ranking_eligible === false || cfg.recommendation_eligible === false) return null;
-    const ttft = dlRecommendationMetric(cfg.ttft_p90 ?? cfg.ttft);
-    const itl = dlRecommendationMetric(cfg.itl_p90 ?? cfg.itl);
-    const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
-    const gpus = dlRecommendationMetric(cfg.gpus ?? cfg.total_gpus);
-    let score = null;
-    if (category === 'lowest_ttft' && ttft != null) score = -ttft;
-    else if (category === 'lowest_itl' && itl != null) score = -itl;
-    else if (category === 'highest_tput') score = tput;
-    else if (category === 'most_efficient' && tput != null && gpus > 0) score = tput / gpus;
-    else if (category === 'balanced' && ttft != null && tput > 0) score = -ttft / tput;
-    return Number.isFinite(score) ? score : null;
+    return ServeItReportModel.score(cfg, category);
 }
 
 function dlRecommendationTestIdentity(cfg) {
-    return Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0
-        ? 'id:' + cfg.test_config_id : 'legacy:' + (cfg.test_id || cfg.config_name || '');
+    return ServeItReportModel.identity(cfg);
 }
 
 function dlManifestCall(cfg, type) {
@@ -203,9 +194,9 @@ function dlRecommendationTable(cfg, runId) {
     let s = '<table style="width:100%;font-size:0.8em;border-collapse:collapse;margin-top:6px;">';
     s += '<tr style="color:#94a3b8;font-weight:600;"><td></td><td>TTFT</td><td>E2E</td><td>ITL</td></tr>';
     ['p50', 'p90', 'p95', 'p99'].forEach(p => {
-        const ttft = dlRecommendationMetric(cfg['ttft_' + p] ?? (p === 'p90' ? cfg.ttft : null));
-        const itl = dlRecommendationMetric(cfg['itl_' + p] ?? (p === 'p90' ? cfg.itl : null));
-        s += `<tr><td style="font-weight:600;color:#475569;">${p.toUpperCase()}</td><td>${ttft != null ? Math.round(ttft).toLocaleString() + ' ms' : 'Unknown'}</td><td>${fmtE2e(cfg['e2e_' + p])}</td><td>${itl != null ? itl.toFixed(2) + ' ms' : 'Unknown'}</td></tr>`;
+        const ttft = ServeItReportModel.metricValue(cfg, 'ttft_' + p, p === 'p90' ? ['ttft'] : []);
+        const itl = ServeItReportModel.metricValue(cfg, 'itl_' + p, p === 'p90' ? ['itl'] : []);
+        s += `<tr><td style="font-weight:600;color:#475569;">${p.toUpperCase()}</td><td>${ttft != null ? Math.round(ttft).toLocaleString() + ' ms' : 'Unknown'}</td><td>${fmtE2e(ServeItReportModel.metricValue(cfg, 'e2e_' + p))}</td><td>${itl != null ? itl.toFixed(2) + ' ms' : 'Unknown'}</td></tr>`;
     });
     s += '</table>';
     const escapeSource = v => String(v ?? 'Unknown').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -298,8 +289,8 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
                 deploy = cfg.config_name || '';
             }
 
-            const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
-            const gpus = dlRecommendationMetric(cfg.gpus ?? cfg.total_gpus) ?? 'Unknown';
+            const tput = ServeItReportModel.metricValue(cfg, 'throughput_mean', ['throughput', 'throughput_p90']);
+            const gpus = ServeItReportModel.deploymentGpus(cfg) ?? 'Unknown';
 
             // Card
             s += '<div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);border:2px solid #cbd5e1;">';
@@ -313,9 +304,9 @@ function buildRecSection(runId, data, rec, summary, best, allRes) {
             s += '<div style="padding:12px 14px;">';
             s += `<div style="font-size:1.1em;font-weight:800;color:#0f172a;margin-bottom:8px;">${deploy}</div>`;
             s += '<div style="display:flex;gap:12px;font-size:0.85em;color:#475569;margin-bottom:4px;flex-wrap:wrap;">';
-            s += `<span>Mean throughput: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
+            s += `<span>${ServeItReportModel.throughputLabel(cfg)}: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
             s += `<span>GPUs: <strong>${gpus}</strong></span>`;
-            const userConc = dlRecommendationMetric(cfg.concurrency) ?? 'Unknown';
+            const userConc = (cfg.evidence === undefined ? dlRecommendationMetric(cfg.concurrency) : ServeItReportModel.conditionValue(cfg, 'configured_concurrency')) ?? 'Unknown';
             s += `<span style="color:#0ea5e9;font-weight:600;">Recorded c=${userConc}</span>`;
             s += '</div>';
             // vLLM tok/s line
@@ -861,8 +852,8 @@ function buildCalRecCards(data, runId) {
             } else {
                 deploy = cfg.name || cfg.config_name || '';
             }
-            const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput_p90);
-            const concStr = 'Recorded c=' + (dlRecommendationMetric(cfg.concurrency) ?? 'Unknown');
+            const tput = ServeItReportModel.metricValue(cfg, 'throughput_mean', ['throughput', 'throughput_p90']);
+            const concStr = 'Recorded c=' + ((cfg.evidence === undefined ? dlRecommendationMetric(cfg.concurrency) : ServeItReportModel.conditionValue(cfg, 'configured_concurrency')) ?? 'Unknown');
 
             s += '<div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);border:2px solid #cbd5e1;">';
             s += `<div style="background:linear-gradient(135deg,${sel.color},${sel.color}cc);padding:10px 14px;color:white;">`;
@@ -875,8 +866,8 @@ function buildCalRecCards(data, runId) {
             s += '<div style="padding:12px 14px;">';
             s += `<div style="font-size:1.1em;font-weight:800;color:#0f172a;margin-bottom:8px;">${deploy}</div>`;
             s += '<div style="display:flex;gap:12px;font-size:0.85em;color:#475569;margin-bottom:4px;">';
-            s += `<span>Mean throughput: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
-            s += `<span>GPUs: <strong>${dlRecommendationMetric(cfg.gpus) ?? 'Unknown'}</strong></span>`;
+            s += `<span>${ServeItReportModel.throughputLabel(cfg)}: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
+            s += `<span>GPUs: <strong>${ServeItReportModel.deploymentGpus(cfg) ?? 'Unknown'}</strong></span>`;
             if (concStr) s += `<span style="color:#0ea5e9;font-weight:600;">${concStr}</span>`;
             s += '</div>';
             // vLLM tok/s
@@ -934,8 +925,8 @@ function buildCacheRecCards(data, runId) {
         } else {
             deploy = cfg.name || cfg.config_name || '';
         }
-        const tput = dlRecommendationMetric(cfg.throughput_mean ?? cfg.throughput_p90);
-        const concStr = 'Recorded c=' + (dlRecommendationMetric(cfg.concurrency) ?? 'Unknown');
+        const tput = ServeItReportModel.metricValue(cfg, 'throughput_mean', ['throughput', 'throughput_p90']);
+        const concStr = 'Recorded c=' + ((cfg.evidence === undefined ? dlRecommendationMetric(cfg.concurrency) : ServeItReportModel.conditionValue(cfg, 'configured_concurrency')) ?? 'Unknown');
         const cacheStr = cfg.cache_hit_pct != null ? cfg.cache_hit_pct + '% cache hit' : '';
 
         s += '<div style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08);border:2px solid #cbd5e1;">';
@@ -950,8 +941,8 @@ function buildCacheRecCards(data, runId) {
         s += '<div style="padding:12px 14px;">';
         s += `<div style="font-size:1.1em;font-weight:800;color:#0f172a;margin-bottom:8px;">${deploy}</div>`;
         s += '<div style="display:flex;gap:12px;font-size:0.85em;color:#475569;margin-bottom:4px;">';
-        s += `<span>Mean throughput: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
-        s += `<span>GPUs: <strong>${dlRecommendationMetric(cfg.gpus) ?? 'Unknown'}</strong></span>`;
+        s += `<span>${ServeItReportModel.throughputLabel(cfg)}: <strong>${tput != null ? tput.toFixed(2) + ' req/s' : 'Unknown'}</strong></span>`;
+        s += `<span>GPUs: <strong>${ServeItReportModel.deploymentGpus(cfg) ?? 'Unknown'}</strong></span>`;
         if (concStr) s += `<span style="color:#7c3aed;font-weight:600;">${concStr}</span>`;
         s += '</div>';
         if (cfg.vllm_tps != null) {
@@ -1728,6 +1719,7 @@ function buildParetoFrontierSection(data, allRes) {
 // ── Chart Rendering Script ──────────────────────────────────────────────────
 function buildChartScript(data, charts, allRes, runId) {
     let s = '<script>';
+    s += ServeItReportModel.embeddedSource();
     s += `function switchDlTab(id){document.querySelectorAll('.dl-tab').forEach(function(t){t.classList.remove('active')});document.querySelectorAll('.dl-pane').forEach(function(p){p.classList.remove('active')});var tab=document.querySelector('.dl-tab[onclick*=\"'+id+'\"]');if(tab)tab.classList.add('active');var pane=document.getElementById('dl-pane-'+id);if(pane){pane.classList.add('active');pane.querySelectorAll('[class*="js-plotly"]').forEach(function(p){Plotly.Plots.resize(p)});}}`;
     s += 'function sortReportTable(tableId,colIdx,type){var table=document.getElementById(tableId);if(!table)return;var rows=Array.from(table.querySelectorAll("tr")).slice(1);var baselineRows=rows.filter(function(r){return r.classList.contains("baseline-row")});var dataRows=rows.filter(function(r){return !r.classList.contains("baseline-row")});var dir=table.getAttribute("data-sort-col")===String(colIdx)&&table.getAttribute("data-sort-dir")==="asc"?"desc":"asc";table.setAttribute("data-sort-col",colIdx);table.setAttribute("data-sort-dir",dir);dataRows.sort(function(a,b){var aCell=a.cells[colIdx],bCell=b.cells[colIdx];var aVal,bVal;if(type==="num"){aVal=parseFloat(aCell.getAttribute("data-val")||aCell.textContent.replace(/[^0-9.\\-]/g,""))||0;bVal=parseFloat(bCell.getAttribute("data-val")||bCell.textContent.replace(/[^0-9.\\-]/g,""))||0}else{aVal=aCell.textContent.trim().toLowerCase();bVal=bCell.textContent.trim().toLowerCase()}if(aVal<bVal)return dir==="asc"?-1:1;if(aVal>bVal)return dir==="asc"?1:-1;return 0});var tbody=table.querySelector("tbody")||table;dataRows.forEach(function(r){tbody.appendChild(r)});baselineRows.forEach(function(r){tbody.appendChild(r)})}';
     // Escape strings for safe embedding in <script> tags
@@ -1769,6 +1761,7 @@ function buildChartScript(data, charts, allRes, runId) {
     });
     s += 'var cd=' + safeJson(charts) + ';';
     s += 'var ar=' + safeJson(arLite) + ';';
+    s += 'var reportContract=' + safeJson(data.report_contract || null) + ';';
     // Build embedded manifest lookup for offline YAML download
     const manifestMap = Object.create(null);
     const identityCounts = new Map();

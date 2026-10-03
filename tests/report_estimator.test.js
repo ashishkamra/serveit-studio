@@ -10,6 +10,7 @@ const vm = require('node:vm');
 // trusted, checked-in application script; never fixture-supplied JavaScript.
 const filename = path.join(__dirname, '../web/static/js/modules/report.js');
 const script = new vm.Script(readFileSync(filename, 'utf8'), { filename });
+const modelScript = new vm.Script(readFileSync(path.join(__dirname, '../web/static/js/report-model.js'), 'utf8'));
 const targets = {
     target_tput: 100, ttft_target: 500, ttft_pctl: 'p99', itl_target: 20, itl_pctl: 'p90',
 };
@@ -69,6 +70,7 @@ function harness(points = []) {
         },
         alert(message) { alerts.push(message); },
     });
+    modelScript.runInContext(context, { timeout: 1000 });
     script.runInContext(context, { timeout: 1000 });
     function setup(suffix, rows, runId) {
         const tabId = suffix.slice(1);
@@ -477,4 +479,80 @@ test('panel IDs and chart suffix are restored even when a renderer throws', () =
     assert.equal(panel.id, 'panel-rt1');
     assert.equal(content.id, 'charts-content');
     assert.equal(h.context._chartSuffix, '');
+});
+
+function versionedPoint() {
+    const p = point({ test_config_id: 1, run_id: 42, ttft_p90: 10, is_ranking_eligible: true });
+    const measured = (value, unit, statistic) => ({ value, unit, statistic, availability: 'available', provenance: 'verified', source_value: value, source_unit: unit, kind: 'reported' });
+    p.evidence = { version: 1, source: { run_id: 42, test_config_id: 1, test_id: p.test_id },
+        eligibility: { ranking_eligible: true, quality: 'ok' },
+        resources: { total_gpus: { value: 2, unit: 'GPU', kind: 'calculated', availability: 'available' } },
+        metrics: { ttft_p90: measured(10, 'ms', 'p90'), ttft_p99: measured(400, 'ms', 'p99'), itl_p90: measured(10, 'ms', 'p90'), throughput_mean: measured(50, 'req/s', 'mean') },
+        conditions: { configured_concurrency: { value: 8, unit: 'requests', availability: 'available', kind: 'configured' },
+            measured_mean_concurrency: { value: 3.5, unit: 'requests', availability: 'available', statistic: 'mean' } },
+    };
+    return p;
+}
+
+test('versioned provenance is rechecked in table, chart and export, not converted into Pass', async () => {
+    const p = versionedPoint();
+    const h = harness([p]);
+    let [row] = h.run();
+    assert.equal(h.context.estimatorOutcome(row).status, 'Pass');
+    assert.equal(bestRows(h.html()).length, 1);
+    assert.match(h.html(), /Recorded concurrency: 8; measured concurrency: 3.5/);
+    for (const provenance of ['unknown', 'mismatch']) {
+        p.evidence.metrics.ttft_p99.provenance = provenance;
+        [row] = h.run();
+        row.ttft_meets = row.itl_meets = true;
+        assert.equal(h.context.estimatorOutcome(row).status, 'Unknown');
+        assert.equal(bestRows(h.html()).length, 0);
+        assert.match(h.html(), /No verified feasible operating point/);
+        await assertExportParity(h);
+    }
+});
+
+test('a versioned estimate with unknown rate provenance remains sized but cannot be Best', () => {
+    const p = versionedPoint();
+    p.evidence.metrics.throughput_mean.provenance = 'unknown';
+    const h = harness([p]);
+    const [row] = h.run();
+    assert.equal(row.total_gpus, 4);
+    assert.equal(h.context.estimatorOutcome(row).status, 'Unknown');
+    assert.match(h.html(), /capacity Unknown/);
+    assert.equal(bestRows(h.html()).length, 0);
+});
+
+test('unsupported report versions clear stale estimator table, chart and export state', () => {
+    const h = harness([point()]);
+    h.run();
+    h.context.tabDataCache.rt1.report_contract = { name: 'serveit.report', version: 2, run_id: 42 };
+    assert.equal(h.run().length, 0);
+    assert.match(h.html(), /role="alert"/);
+    assert.match(h.html(), /Unsupported or invalid report evidence contract/);
+    assert.equal(h.element('est-chart-rt1').plot, undefined);
+});
+
+test('rerender invalidates only the affected report estimate snapshot', () => {
+    const h = harness([point()]);
+    h.setup('-rt2', [point()], 99);
+    h.run();
+    h.run('-rt2');
+    h.context.renderCharts = () => {};
+    h.context.renderChartsInPanel(h.context.tabDataCache.rt1, 42, 'rt1');
+    assert.equal(h.context._lastEstResults['-rt1'], undefined);
+    assert.ok(h.context._lastEstResults['-rt2']);
+    h.context.downloadEstimatorReport('-rt1');
+    assert.equal(h.alerts.at(-1), 'Run the estimator first');
+});
+
+test('versioned cached sizing is rechecked against source rate and whole-deployment GPUs', async () => {
+    const h = harness([versionedPoint()]);
+    const rows = h.run();
+    assert.equal(rows[0].total_gpus, 4);
+    rows[0].total_gpus = 1;
+    assert.equal(h.context.estimatorOutcome(rows[0]).status, 'Unknown');
+    h.context.renderEstimatorResults(rows, '-rt1');
+    assert.equal(bestRows(h.html()).length, 0);
+    await assertExportParity(h);
 });

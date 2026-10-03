@@ -36,7 +36,7 @@ async function main() {
         updateEstimatorScaling() {}, initReportSubtabs() {}, setTimeout() {},
     });
     const root = path.resolve(__dirname, '..');
-    for (const file of ['web/static/js/modules/charts.js', 'web/static/js/report-download.js']) {
+    for (const file of ['web/static/js/report-model.js', 'web/static/js/modules/charts.js', 'web/static/js/report-download.js']) {
         new vm.Script(readFileSync(path.join(root, file), 'utf8'), { filename: file })
             .runInContext(context, { timeout: 1000 });
     }
@@ -67,6 +67,7 @@ async function main() {
     const estimatorExport = await blobs.at(-1).text();
     const plot = plots.find(p => p.id === 'est-chart-contract');
     process.stdout.write(JSON.stringify({ live, exported, actions, scores, estimator, estimatorExport, plot,
+        modelVersion: context.ServeItReportModel.version, evidenceNotice: context.ServeItReportModel.noticeHTML(data),
         bestGpus: context.estimatorBestGpus(rows),
         rows: rows.map(row => ({ ...row, outcome: context.estimatorOutcome(row), source: context.estimatorSource(row) })),
     }));

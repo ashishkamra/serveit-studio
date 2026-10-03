@@ -13,7 +13,7 @@ def test_report_recommendations():
         pytest.skip("Node.js is required for report renderer regression tests")
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
-        [node, "--test", "tests/report_recommendations.test.js"],
+        [node, "--test", "tests/report_recommendations.test.js", "tests/report_model.test.js"],
         cwd=root,
         capture_output=True,
         text=True,

@@ -1,18 +1,16 @@
 // charts.js — Plotly chart rendering for all report visualizations
 
-// Keep recommendation ranking in sync with dlRecommendationScore in report-download.js.
+// Compatibility names delegate to the shared live/export evidence policy.
 function recommendationMetric(value) {
-    return Number.isFinite(value) && value >= 0 ? value : null;
+    return ServeItReportModel.metric(value);
 }
 
 function recommendationEligible(cfg) {
-    // The backend field is canonical; neither spelling's denial may become an allow.
-    return cfg.quality !== 'discard' && cfg.is_ranking_eligible !== false && cfg.recommendation_eligible !== false;
+    return ServeItReportModel.eligible(cfg);
 }
 
 function recommendationTestIdentity(cfg) {
-    return Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0
-        ? 'id:' + cfg.test_config_id : 'legacy:' + (cfg.test_id || cfg.config_name || '');
+    return ServeItReportModel.identity(cfg);
 }
 
 function reportManifestUrl(runId, cfg, type) {
@@ -34,18 +32,7 @@ function clearReportActions(runId) {
 }
 
 function recommendationScore(cfg, category) {
-    if (!recommendationEligible(cfg)) return null;
-    const ttft = recommendationMetric(cfg.ttft_p90 ?? cfg.ttft);
-    const itl = recommendationMetric(cfg.itl_p90 ?? cfg.itl);
-    const tput = recommendationMetric(cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90);
-    const gpus = recommendationMetric(cfg.gpus ?? cfg.total_gpus);
-    let score = null;
-    if (category === 'lowest_ttft' && ttft != null) score = -ttft;
-    else if (category === 'lowest_itl' && itl != null) score = -itl;
-    else if (category === 'highest_tput') score = tput;
-    else if (category === 'most_efficient' && tput != null && gpus > 0) score = tput / gpus;
-    else if (category === 'balanced' && ttft != null && tput > 0) score = -ttft / tput;
-    return Number.isFinite(score) ? score : null;
+    return ServeItReportModel.score(cfg, category);
 }
 
 function renderCharts(data, runId) {
@@ -56,6 +43,8 @@ function renderCharts(data, runId) {
     }
 }
 function _renderChartsImpl(data, runId, content) {
+    clearReportActions(runId);
+    ServeItReportModel.assertSupported(data, runId);
 
     const summary = data.summary;
     const chartQueue = [];
@@ -70,7 +59,7 @@ function _renderChartsImpl(data, runId, content) {
         dlLink.onclick = (e) => { e.preventDefault(); downloadHTMLReport(runId, data); };
     }
 
-    let html = '';
+    let html = ServeItReportModel.noticeHTML(data);
     let secRec = '', secTP = '', secCfg = '', secCmp = '', secStep9 = '', secCal = '', secCacheSweep = '', secVLLM = '', secTestCfg = '', secEppTuning = '', secDeployTiming = '', secPareto = '', secTraffic = '';
 
     // Keep legacy lookups for older chart sections, but bind cards to immutable IDs.
@@ -83,8 +72,8 @@ function _renderChartsImpl(data, runId, content) {
 
     // Shared recommendation card builder
     function _buildRecCard(opts) {
-        // opts: label, icon, desc, color, archKey, deploy, tput, gpus, conc,
-        //       ttft_p90, ttft_p95, ttft_p99, itl_p90, itl_p95, itl_p99,
+        // opts: source (same-test metrics/evidence), label, icon, desc, color,
+        //       archKey, deploy, normalized tput/gpus/conc,
         //       recId, testId, manifests, runId, extraBadges (array of {text, bg, color}),
         //       extraInfo
         var archColors = { pd: '#2563eb', aggregated: '#059669', ep: '#7c3aed' };
@@ -117,7 +106,7 @@ function _renderChartsImpl(data, runId, content) {
 
         // Metrics line
         h += '<div style="display:flex;gap:12px;font-size:0.85em;color:#475569;margin-bottom:4px;flex-wrap:wrap;">';
-        h += '<span>Mean throughput: <strong>' + (recommendationMetric(opts.tput) != null ? opts.tput.toFixed(2) + ' req/s' : 'Unknown') + '</strong></span>';
+        h += '<span>' + ServeItReportModel.throughputLabel(opts.source) + ': <strong>' + (recommendationMetric(opts.tput) != null ? opts.tput.toFixed(2) + ' req/s' : 'Unknown') + '</strong></span>';
         h += '<span>GPUs: <strong>' + (recommendationMetric(opts.gpus) ?? 'Unknown') + '</strong></span>';
         if (opts.conc) h += '<span style="color:#0ea5e9;font-weight:600;">' + opts.conc + '</span>';
         h += '</div>';
@@ -135,11 +124,11 @@ function _renderChartsImpl(data, runId, content) {
         h += '<table style="width:100%;font-size:0.8em;border-collapse:collapse;margin-top:6px;">';
         h += '<tr style="color:#94a3b8;font-weight:600;"><td></td><td>TTFT</td><td>E2E</td><td>ITL</td></tr>';
         ['p50', 'p90', 'p95', 'p99'].forEach(function(p) {
-            const ttft = recommendationMetric(opts['ttft_' + p]);
-            const itl = recommendationMetric(opts['itl_' + p]);
+            const ttft = ServeItReportModel.metricValue(opts.source, 'ttft_' + p, p === 'p90' ? ['ttft'] : []);
+            const itl = ServeItReportModel.metricValue(opts.source, 'itl_' + p, p === 'p90' ? ['itl'] : []);
             h += '<tr><td style="font-weight:600;color:#475569;">' + p.toUpperCase() + '</td><td>' +
                 (ttft != null ? Math.round(ttft).toLocaleString() + ' ms' : 'Unknown') + '</td><td>' +
-                _fmtE2e(opts['e2e_' + p]) + '</td><td>' + (itl != null ? itl.toFixed(2) + ' ms' : 'Unknown') + '</td></tr>';
+                _fmtE2e(ServeItReportModel.metricValue(opts.source, 'e2e_' + p)) + '</td><td>' + (itl != null ? itl.toFixed(2) + ' ms' : 'Unknown') + '</td></tr>';
         });
         h += '</table>';
         const escapeSource = v => String(v ?? 'Unknown').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -234,7 +223,6 @@ function _renderChartsImpl(data, runId, content) {
     // ============================================================
     // Store recommendation configs for single test re-run
     window._recConfigs = window._recConfigs || {};
-    clearReportActions(runId);
     // Preserve other open reports; never bind an action to a category or display name.
     function recActionId(cfg) {
         if (runId == null || (!cfg.test_id && !(Number.isSafeInteger(cfg.test_config_id) && cfg.test_config_id > 0))) return null;
@@ -313,8 +301,8 @@ function _renderChartsImpl(data, runId, content) {
                 const recId = recActionId(cfg);
                 if (recId) window._recConfigs[recId] = { ...cfg, run_id: runId, architecture: archKey, model: rec.model, image: (data.run_config || {}).image, test_settings: cfg.test_settings || fallbackTs, epp_config: cfg.epp_config };
 
-                const gpus = cfg.gpus ?? cfg.total_gpus;
-                const tputMean = cfg.throughput_mean ?? cfg.throughput ?? cfg.throughput_p90;
+                const gpus = ServeItReportModel.deploymentGpus(cfg);
+                const tputMean = ServeItReportModel.metricValue(cfg, 'throughput_mean', ['throughput', 'throughput_p90']);
 
                 const recManifests = cfg.manifest_types || (_recResLookup[recommendationTestIdentity(cfg)] || {}).manifest_types || [];
 
@@ -330,17 +318,13 @@ function _renderChartsImpl(data, runId, content) {
                 if (_resEntry.cache_hit_pct != null) badges.push({ text: _resEntry.cache_hit_pct + '% cache hit', bg: 'rgba(255,255,255,0.2)', color: 'white' });
 
                 // All percentile rows belong to cfg, not the independently ranked tail winners.
-                const userConc = 'Recorded c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
+                const userConc = 'Recorded c=' + ((cfg.evidence === undefined ? recommendationMetric(cfg.concurrency) : ServeItReportModel.conditionValue(cfg, 'configured_concurrency')) ?? 'Unknown');
                 html += _buildRecCard({
                     label: sel.label, icon: sel.icon, desc: sel.desc, color: sel.color,
+                    source: cfg,
                     archKey: archKey, deploy: deploy,
                     tput: tputMean, gpus: gpus, conc: userConc,
                     vllm_tps: _vllmTps > 0 ? _vllmTps : null,
-                    ttft_p50: cfg.ttft_p50, ttft_p90: cfg.ttft_p90 ?? cfg.ttft,
-                    ttft_p95: cfg.ttft_p95, ttft_p99: cfg.ttft_p99,
-                    e2e_p50: cfg.e2e_p50, e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
-                    itl_p50: cfg.itl_p50, itl_p90: cfg.itl_p90 ?? cfg.itl,
-                    itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
                     recId: recId, testId: cfg.test_id, testConfigId: cfg.test_config_id,
                     manifests: recManifests, runId: runId,
                     extraBadges: badges.length ? badges : null
@@ -423,8 +407,8 @@ function _renderChartsImpl(data, runId, content) {
                 deploy = cfg.name || cfg.config_name;
             }
 
-            const concStr = 'Recorded c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
-            const tput = cfg.throughput_mean ?? cfg.throughput_p90;
+            const concStr = 'Recorded c=' + ((cfg.evidence === undefined ? recommendationMetric(cfg.concurrency) : ServeItReportModel.conditionValue(cfg, 'configured_concurrency')) ?? 'Unknown');
+            const tput = ServeItReportModel.metricValue(cfg, 'throughput_mean', ['throughput', 'throughput_p90']);
 
             const calRecId = recActionId(cfg);
             if (calRecId) window._recConfigs[calRecId] = { ...cfg, run_id: runId, architecture: archKey, model: rec ? rec.model : '', image: (data.run_config || {}).image, test_settings: cfg.test_settings };
@@ -444,13 +428,11 @@ function _renderChartsImpl(data, runId, content) {
 
             html += _buildRecCard({
                 label: sel.label, icon: sel.icon, desc: sel.desc, color: sel.color,
+                source: cfg,
                 archKey: archKey, deploy: deploy,
-                tput: tput, gpus: cfg.gpus,
+                tput: tput, gpus: ServeItReportModel.deploymentGpus(cfg),
                 conc: concStr,
                 vllm_tps: _calVllmTps > 0 ? _calVllmTps : null,
-                ttft_p50: cfg.ttft_p50, ttft_p90: cfg.ttft_p90, ttft_p95: cfg.ttft_p95, ttft_p99: cfg.ttft_p99,
-                e2e_p50: cfg.e2e_p50, e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
-                itl_p50: cfg.itl_p50, itl_p90: cfg.itl_p90, itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
                 recId: calRecId, testId: cfg.test_id, testConfigId: cfg.test_config_id,
                 manifests: calManifests, runId: runId,
                 extraBadges: badges.length ? badges : null
@@ -497,8 +479,8 @@ function _renderChartsImpl(data, runId, content) {
                 deploy = cfg.name || cfg.config_name;
             }
 
-            const concStr = 'Recorded c=' + (recommendationMetric(cfg.concurrency) ?? 'Unknown');
-            const tput = cfg.throughput_mean ?? cfg.throughput_p90;
+            const concStr = 'Recorded c=' + ((cfg.evidence === undefined ? recommendationMetric(cfg.concurrency) : ServeItReportModel.conditionValue(cfg, 'configured_concurrency')) ?? 'Unknown');
+            const tput = ServeItReportModel.metricValue(cfg, 'throughput_mean', ['throughput', 'throughput_p90']);
             const cacheStr = cfg.cache_hit_pct != null ? cfg.cache_hit_pct + '% cache hit' : '';
 
             const cacheRecId = recActionId(cfg);
@@ -517,13 +499,11 @@ function _renderChartsImpl(data, runId, content) {
 
             html += _buildRecCard({
                 label: sel.label, icon: sel.icon, desc: sel.desc, color: sel.color,
+                source: cfg,
                 archKey: archKey, deploy: deploy,
-                tput: tput, gpus: cfg.gpus,
+                tput: tput, gpus: ServeItReportModel.deploymentGpus(cfg),
                 conc: concStr,
                 vllm_tps: cfg.vllm_tps || (_cacheVllmTps > 0 ? _cacheVllmTps : null),
-                ttft_p50: cfg.ttft_p50, ttft_p90: cfg.ttft_p90, ttft_p95: cfg.ttft_p95, ttft_p99: cfg.ttft_p99,
-                e2e_p50: cfg.e2e_p50, e2e_p90: cfg.e2e_p90, e2e_p95: cfg.e2e_p95, e2e_p99: cfg.e2e_p99,
-                itl_p50: cfg.itl_p50, itl_p90: cfg.itl_p90, itl_p95: cfg.itl_p95, itl_p99: cfg.itl_p99,
                 recId: cacheRecId, testId: cfg.test_id, testConfigId: cfg.test_config_id,
                 manifests: cacheManifests, runId: runId,
                 extraBadges: badges.length ? badges : null

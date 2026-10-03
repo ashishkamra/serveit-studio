@@ -35,8 +35,9 @@ def check_browser(browser, plotly_source, width):
             path = urlparse(url).path
             if url == "https://serveit.test/":
                 route.fulfill(content_type="text/html", body=SHELL)
-            elif url.startswith("https://serveit.test/api/runs/") and path.endswith("/charts"):
-                route.fulfill(content_type="application/json", body=json.dumps(report, allow_nan=False))
+            elif path in ("/api/runs/42/charts", "/api/runs/99/charts") and url.startswith("https://serveit.test/"):
+                source = report if path == "/api/runs/42/charts" else generated_report(run_id=99)
+                route.fulfill(content_type="application/json", body=json.dumps(source, allow_nan=False))
             elif url == "https://cdn.plot.ly/plotly-2.35.2.min.js":
                 route.fulfill(content_type="application/javascript", body=plotly_source)
             else:
@@ -50,7 +51,13 @@ def check_browser(browser, plotly_source, width):
         page.add_style_tag(path=str(ROOT / "web/static/css/style.css"))
         page.add_script_tag(content=plotly_source)
         assert page.evaluate("Plotly.version") == "2.35.2", "Use the production Plotly version"
-        for file in ("modules/report.js", "modules/ui-helpers.js", "modules/charts.js", "report-download.js"):
+        for file in (
+            "report-model.js",
+            "modules/report.js",
+            "modules/ui-helpers.js",
+            "modules/charts.js",
+            "report-download.js",
+        ):
             page.add_script_tag(path=str(ROOT / "web/static/js" / file))
         page.evaluate("""() => {
             window.applyReportConfig = key => window.smokeAction = window._recConfigs[key];
@@ -129,6 +136,32 @@ def check_browser(browser, plotly_source, width):
         exported.locator(".dl-tab").filter(has_text="Configurations").click()
         expect(exported.locator("#dl-pane-cfg")).to_have_class("dl-pane active")
         exported.close()
+
+        # Actual old records have no automatically certified raw-source evidence.
+        # The versioned report must disclose this and keep estimates diagnostic.
+        historical = generated_report(with_raw_source=False)
+        page.evaluate(
+            """data => {
+            tabDataCache.rt1 = data;
+            renderChartsInPanel(data, 42, 'rt1');
+        }""",
+            historical,
+        )
+        expect(page.locator("#panel-rt1 .report-evidence-notice")).to_contain_text(
+            "Historical P99 provenance is Unknown"
+        )
+        assert page.evaluate("!_lastEstResults['-rt1']")
+        page.locator('[data-subtab="estimator-rt1"]').click()
+        page.get_by_role("button", name="Estimate", exact=True).click()
+        expect(page.locator("#est-results-rt1")).to_contain_text("No verified feasible operating point")
+        expect(page.locator("#est-results-rt1 .estimator-best")).to_have_count(0)
+        page.evaluate(
+            """data => {
+            tabDataCache.rt1 = data;
+            renderChartsInPanel(data, 42, 'rt1');
+        }""",
+            report,
+        )
 
         page.locator("#chart-run-select").select_option("99")
         page.get_by_role("button", name="Add", exact=True).click()

@@ -20,7 +20,7 @@ function harness() {
         chartCard: () => '', statCard: (value, label) => `<div>${label}: ${value}</div>`,
         updateEstimatorScaling() {}, initReportSubtabs() {}, setTimeout() {},
     });
-    for (const filename of ['web/static/js/modules/charts.js', 'web/static/js/report-download.js']) {
+    for (const filename of ['web/static/js/report-model.js', 'web/static/js/modules/charts.js', 'web/static/js/report-download.js']) {
         vm.runInContext(readFileSync(path.join(root, filename), 'utf8'), context, { filename });
     }
     return {
@@ -446,3 +446,22 @@ for (const key of ['normal', 'calibrated_best', 'cache_sweep_best']) {
         assert.doesNotMatch(exported, /dlManifest\('shared','lws',102\)|dlManifest\('shared','service'/);
     });
 }
+
+test('unsupported declared evidence versions clear this run actions and refuse live/export rendering', () => {
+    const h = harness();
+    h.live(fixture(), 42);
+    h.live(fixture(), 99);
+    const data = fixture();
+    data.report_contract = { name: 'serveit.report', version: 2, run_id: 42 };
+    assert.throws(() => h.live(data), /Unsupported or invalid/);
+    assert.throws(() => h.export(data), /Unsupported or invalid/);
+    assert.ok(Object.values(h.context.window._recConfigs).every(cfg => cfg.run_id === 99));
+});
+
+test('legacy rate aliases are explicitly labelled, never advertised as a verified mean', () => {
+    const cfg = config('legacy-rate', { throughput_mean: null, throughput_p90: 12.5 });
+    for (const renderer of ['live', 'export']) {
+        const html = harness()[renderer](fixture(cfg));
+        assert.match(card(html, 'Highest Throughput'), /Reported throughput \(legacy alias\): <strong>12.50 req\/s/);
+    }
+});

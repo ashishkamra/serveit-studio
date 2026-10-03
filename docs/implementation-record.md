@@ -2,10 +2,10 @@
 
 Snapshot date: **2026-10-01**.
 
-**Current status: P0.1 follow-up published; P0.2 immutable artifact increment
-implemented and validated locally; broader redesign remains unfinished.** See
-**Section 10** for publication and current validation. Section 9 records the
-preceding P0.1 integration checks.
+**Current status: P0.1 and P0.2 artifact increments published; initial shared
+evidence contract v1 implemented and validated locally; broader redesign remains
+unfinished.** See **Section 11** for current validation and the next source-retention
+step. Sections 9–10 preserve preceding integration/publication snapshots.
 Sections 1–8 preserve the original checkpoint inventory and limitations; their
 validation counts and resolved mismatch notes are historical, not current.
 
@@ -415,3 +415,91 @@ source-backed historical percentile provenance/repair, matched baselines, SLO-aw
 selection, remaining metric/concurrency semantics, and migrating trial payloads
 that still lack immutable IDs. P1/P2/P3 remain planned. See
 [API reference](api-reference.md#manifests) for the new endpoint contract.
+
+## 11. Artifact publication and shared evidence contract v1
+
+The user explicitly requested another commit/push/continue checkpoint. The
+artifact increment was committed as **`c821aad7cfd4ecde6f6fdfb4d0035048ddca3ffc`**:
+`Add: Bind report artifacts to immutable run and test identities`. Push to the
+confirmed fork feature branch succeeded and its remote SHA was verified. No
+original-upstream/main push, merge, force push, or PR was performed.
+
+Implementation then continued with the initial versioned browser evidence model:
+
+- `core/report_evidence.py` produces the additive `serveit.report` v1 envelope and
+  same-test evidence attached by immutable ID. It records explicit metric units,
+  statistics, availability, source references/agreement, eligibility, configured
+  versus measured concurrency, calculated whole-deployment GPUs, and allowlisted
+  workload conditions. No matched baseline or production SLO is invented.
+- `core/report_data.py` reads the optional existing raw-JSON column without
+  requiring a migration. Numeric validation handles extreme integer overflow.
+  `core/report_analysis.py` adds the contract to browser payloads and preserves
+  zeros/finite optional metrics instead of relying on truthiness. Legacy fields
+  and E2E millisecond aliases remain compatible.
+- Provenance remains unknown without usable preserved raw input. Exact disagreement
+  is diagnostic, not repaired. Exact agreement checks the actual percentile,
+  never P99.9 in place of P99, and rechecks source units. No tolerance can create
+  a false pass across a tight target. E2E seconds are converted explicitly to
+  milliseconds; long E2E is not mistaken for a TTFT/ITL penalty sentinel.
+- The parser's existing successful-count / duration request-rate fallback is
+  described as an explicit, supported calculation. Source counts/duration and
+  exact result agreement are rechecked. Invalid means cannot borrow a good alias;
+  compatibility rate aliases are not certified as means.
+- `web/static/js/report-model.js` is the shared policy for live/export metric,
+  identity, eligibility, category scoring, source notices, units and sizing checks.
+  The actual Jinja page loads it before consumers. Browser-generated HTML embeds
+  the same factory and contract metadata, not a copied implementation or another
+  model asset dependency. Existing public helper names delegate to the model.
+- Versioned cards consume typed values instead of guessing from legacy aliases.
+  Unknown versions/policies and cross-run/test evidence fail closed. Per-value
+  invalid/unsupported evidence remains unavailable, with source notices. Legacy
+  unversioned reports retain numeric compatibility with an explicit limitation.
+- Versioned estimator Pass/Best requires matching source latency evidence, a
+  verified reported/calculated mean, integral deployment GPU count and consistent
+  whole-deployment sizing. Unknown/mismatched evidence remains diagnostic. Cached
+  booleans/derived counts cannot bypass checks; rerender invalidates only that
+  tab's estimate snapshot. A Pass still is not a measured fleet-level guarantee.
+
+### Validation and findings
+
+| Check | Result |
+| --- | --- |
+| Full isolated Python 3.11.15 suite | **231 passed, 0 skipped**, existing gevent SSL warning |
+| Imports → API → evidence → contract → artifacts → safety in a fresh process | **156 passed, 0 skipped**, same warning |
+| Direct model/recommendation/estimator Node suites | **84 passed, 0 failed/skipped** |
+| Chrome 1440px / 390px fixture checks | Passed, including unknown-history no-feasible state, rerender invalidation, actual HTML/SVG/YAML downloads |
+| Real authenticated Flask index/static asset checks | Passed; model loaded before consumers |
+| Whole-repository Ruff, four production JS syntax checks, whitespace | Passed |
+
+Counts include Node wrappers; do not double-count the underlying Node cases.
+The new tests cover missing/malformed/mismatched/exact raw sources, old SQLite
+schemas, units, zeros/overflow, calculated rates, strict target boundaries,
+cross-layer card agreement, unsupported contracts, source identities, and cache
+invalidation. Browser fixtures now return each run's actual identity: the new
+guard correctly rejected the old fixture returning run 42 data for run 99.
+A wording regression also caught a missing rate being falsely described as an
+existing alias; the label now changes only for an actual compatibility value.
+
+### Limitations and next step
+
+See [report-evidence-contract.md](report-evidence-contract.md) for the normative
+initial contract. Source “verified” means numerical agreement with available
+GUIDELLM-shaped input, not file authenticity, original-versus-reconstituted
+lineage, collection-window certification, matched workloads, or production SLOs.
+Database-record timestamps are explicitly **not** a verified measurement window.
+
+**Important discovered limitation:** `DatabaseManager.insert_test_result` currently
+does not populate its existing raw-JSON column. This tranche did not change
+ingestion or backfill it. Many existing/newly persisted records therefore remain
+unknown, and source-verified sizing can legitimately have no feasible point.
+The next P0.2 tranche is preserving new raw sources with explicit lineage, followed
+by a backed-up, opt-in historical audit/repair flow—not silently rewriting records
+on read. No source file, stored metrics, cluster resource, or production dependency
+was changed by this read-only contract work.
+
+This contract increment remains **local and uncommitted** after the requested
+artifact checkpoint push. Broader P0.2 remains incomplete: baseline matching,
+uniform SLO-aware recommendation selection, remaining legacy chart semantics,
+trial identities, and Python HTML/Markdown evidence migration. P1/P2/P3 layouts,
+guided recovery, and accessibility remain planned. Node 20, hosted CI, real
+clusters and assistive-technology certification were not exercised.

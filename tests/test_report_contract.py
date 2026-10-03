@@ -14,12 +14,13 @@ import pytest
 
 from core.report_analysis import ReportAnalyzer
 from tests.test_report_integrity import result
+from tests.test_report_evidence import raw_source
 
 ROOT = Path(__file__).resolve().parents[1]
 CATEGORIES = ("balanced", "lowest_ttft", "lowest_itl", "highest_tput", "most_efficient")
 
 
-def generated_report():
+def generated_report(with_raw_source=True, run_id=42):
     def metrics(mean=10, server_tps=0, **extra):
         return json.dumps(
             {
@@ -52,7 +53,7 @@ def generated_report():
             metrics_json=metrics(20, server_tps=200),
             manifests_yaml='{"lws": "kind: SecondSource"}',
         ),
-        # Diagnostic success, but invalid mean. Serialized mean becomes None;
+        # Diagnostic success, but invalid mean. Zero remains explicit in the payload;
         # canonical eligibility must still block the tempting legacy fallback.
         result(3, config_name="step6-ineligible", metrics_json=metrics(0)),
         result(4, config_name="step6-zero-gpus", prefill_pods=0, metrics_json=metrics()),
@@ -64,6 +65,9 @@ def generated_report():
         result(10, config_name="step6-zero-itl", itl_p90=0, metrics_json=metrics()),
         result(11, config_name="step6-no-tail", ttft_p99=None, metrics_json=metrics()),
     ]
+    if with_raw_source:
+        for row in rows:
+            row.guidellm_raw_json = raw_source(row)
     with sqlite3.connect(":memory:") as conn:
         conn.row_factory = sqlite3.Row
         conn.execute("""CREATE TABLE optimization_runs (
@@ -71,14 +75,17 @@ def generated_report():
             goal TEXT, constraint_notes TEXT, created_at TEXT, completed_at TEXT,
             isl_stdev REAL, osl_stdev REAL, config_json TEXT, optimal_config TEXT, max_gpus INTEGER
         )""")
-        conn.execute("""INSERT INTO optimization_runs (id, model, isl, osl, num_users, goal, config_json)
-                        VALUES (42, 'contract', 100, 100, 4, 'ttft',
-                        '{"isl": 100, "osl": 100, "num_users": 4, "model_name": "contract"}')""")
+        conn.execute(
+            """INSERT INTO optimization_runs (id, model, isl, osl, num_users, goal, config_json)
+                        VALUES (?, 'contract', 100, 100, 4, 'ttft',
+                        '{"isl": 100, "osl": 100, "num_users": 4, "model_name": "contract"}')""",
+            (run_id,),
+        )
         conn.execute("""CREATE TABLE test_configurations (
             run_id INTEGER, config_name TEXT, status TEXT, test_config_json TEXT
         )""")
         loader = SimpleNamespace(conn=conn, get_all_test_results=lambda _: rows)
-        return ReportAnalyzer().build_full_report_data(42, loader)
+        return ReportAnalyzer().build_full_report_data(run_id, loader)
 
 
 def consume(report):
@@ -120,7 +127,7 @@ def test_backend_to_browser_contract(variant):
     report = generated_report()
     raw = {r["test_config_id"]: r for r in report["all_results"]}
     assert raw[3]["is_ranking_eligible"] is False
-    assert raw[3]["throughput_mean"] is None and raw[3]["throughput_p90"] == 10
+    assert raw[3]["throughput_mean"] == 0 and raw[3]["throughput_p90"] == 10
     assert raw[4]["is_ranking_eligible"] is False
     if variant == "overridden_candidates":
         # Deliberately bypass backend candidate selection to test defensive gates
@@ -132,11 +139,13 @@ def test_backend_to_browser_contract(variant):
         report["summary"]["calibrated_best"] = dict.fromkeys(CATEGORIES, candidate)
         report["summary"]["cache_sweep_best"] = dict.fromkeys(CATEGORIES, candidate)
     elif variant == "legacy":
+        report.pop("report_contract")
 
         def strip(value):
             if isinstance(value, dict):
                 value.pop("is_ranking_eligible", None)
                 value.pop("test_config_id", None)
+                value.pop("evidence", None)
                 for child in value.values():
                     strip(child)
             elif isinstance(value, list):
@@ -206,3 +215,44 @@ def test_backend_to_browser_contract(variant):
             assert "dlManifest('step6-shared','lws',2)" in observed["exported"]
             assert "test config ID: 1" in observed["live"]
             assert "test config ID: 2" in observed["exported"]
+
+
+def test_unknown_historical_sources_remain_diagnostic_in_versioned_estimates():
+    report = generated_report(with_raw_source=False)
+    observed = consume(report)
+    assert observed["modelVersion"] == 1
+    assert observed["evidenceNotice"] in observed["live"]
+    assert observed["evidenceNotice"] in observed["exported"]
+    assert "Historical P99 provenance is Unknown" in observed["evidenceNotice"]
+    assert observed["bestGpus"] is None
+    assert all(not row["outcome"]["feasible"] for row in observed["rows"])
+    assert "No verified feasible operating point" in observed["estimatorExport"]
+    assert cards(observed["live"])  # Category selection is not SLO verification.
+
+
+def test_source_mismatch_is_not_repaired_or_hidden_by_a_raw_alias():
+    report = generated_report()
+    source = next(row for row in report["all_results"] if row["test_config_id"] == 1)
+    source["ttft_p99"] = 999
+    metric = source["evidence"]["metrics"]["ttft_p99"]
+    metric.update(value=999, provenance="mismatch")
+    observed = consume(report)
+    assert source["ttft_p99"] == metric["value"] == 999
+    assert "disagree with preserved raw source" in observed["evidenceNotice"]
+    row = next(row for row in observed["rows"] if row["test_config_id"] == 1)
+    assert row["outcome"]["status"] == "Unknown"
+    assert not row["outcome"]["feasible"]
+    for html in (observed["live"], observed["exported"]):
+        first = cards(html)[0]
+        assert "P99</td><td>Unknown" in first
+        assert "999 ms" not in first
+
+
+def test_versioned_card_units_are_not_guessed_from_legacy_e2e_fields():
+    report = generated_report()
+    source = next(row for row in report["all_results"] if row["test_config_id"] == 1)
+    source["evidence"]["metrics"]["e2e_p99"].update(value=4, unit="s")
+    observed = consume(report)
+    for html in (observed["live"], observed["exported"]):
+        first = cards(html)[0]
+        assert "P99</td><td>30 ms</td><td>Unknown" in first

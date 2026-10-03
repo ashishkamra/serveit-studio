@@ -2,6 +2,33 @@
 
 Snapshot date: **2026-10-01**.
 
+## Current continuation: shared evidence contract v1
+
+The artifact increment was committed/pushed to the confirmed fork feature branch
+as **`c821aad`**. The subsequent initial shared evidence-contract increment is
+implemented and validated, but remains **local and uncommitted**. Read
+[implementation record, Section 11](implementation-record.md#11-artifact-publication-and-shared-evidence-contract-v1)
+and [the contract](report-evidence-contract.md) before using older snapshots below.
+
+Current checks: **231 full-suite tests**, **156 alternate-order checks**, **84 Node
+cases**, and real desktop/narrow Chrome fixture checks all pass. Ruff, production
+JS syntax, authenticated page/asset ordering, and whitespace checks pass. The
+existing gevent SSL warning remains; no real workload or data migration occurred.
+
+`core/report_evidence.py` supplies `serveit.report` v1 and same-test typed evidence;
+`report-model.js` supplies one policy embedded in live/browser-export paths.
+Unknown/mismatched source provenance cannot verify a versioned estimate. Legacy
+unversioned payloads remain numerically compatible with explicit caveats. Do not
+call the whole redesign, all P0.2, or every Python/legacy chart pipeline complete.
+
+**Next incomplete step:** preserve new source artifacts with explicit lineage.
+The current `DatabaseManager.insert_test_result` path does not populate the
+existing `guidellm_raw_json` column. Historical absence must stay unknown, not be
+certified by the new reader. Plan backed-up, opt-in audit/repair afterwards; do not
+silently reparse/overwrite history on report reads. Numerical agreement with
+GUIDELLM-shaped input is not file authentication or verified workload/window
+comparability. Review the current local increment before further publication.
+
 ## Latest continuation: publication and P0.2 artifact identity
 
 The user requested a local commit/push and then continued implementation. After
@@ -17,8 +44,8 @@ require run plus immutable test ID and preserve auth; browser live/downloaded
 artifact actions prefer the same identity. Legacy name routes remain compatible,
 and offline legacy ambiguity fails closed. No stored data was migrated.
 
-The next P0.2 step is the **shared versioned evidence contract and historical
-provenance policy**, not another eligibility or artifact-name fix. Trial payloads
+At that snapshot, the next P0.2 step was the shared evidence contract; the current
+continuation above records its implementation and the new next step. Trial payloads
 without immutable IDs still use compatibility routes; do not claim every legacy
 action or all P0.2 acceptance criteria are complete. The earlier updates below
 are chronological snapshots, superseded by this section where noted.

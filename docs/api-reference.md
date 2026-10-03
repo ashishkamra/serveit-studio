@@ -286,6 +286,12 @@ curl -s -X PUT $BASE_URL/api/runs/42/notes \
 
 Full report data including charts, summary statistics, and deployment recommendations.
 
+Available reports now include additive `report_contract` version 1 and same-test
+`evidence` on immutable-ID-bearing records. Units, provenance, configured/measured
+concurrency, and calculation semantics are explicit; legacy fields are retained.
+See [report evidence contract](report-evidence-contract.md) for required fields,
+compatibility, historical unknowns, and sizing limitations.
+
 ```bash
 curl -s $BASE_URL/api/runs/42/charts | jq '.summary'
 ```

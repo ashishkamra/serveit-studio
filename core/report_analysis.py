@@ -11,6 +11,7 @@ import logging
 from typing import List, Dict, Any
 
 from core.report_data import TestResult, ParetoPoint, valid_metric
+from core.report_evidence import attach_report_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -1469,19 +1470,20 @@ class ReportAnalyzer:
                 'config_name': r.display_label,
                 'test_id': r.config_name,
                 'architecture': (r.architecture or 'unknown').upper(),
-                'ttft_p50': round(r.ttft_p50, 2) if r.ttft_p50 else None,
-                'ttft_p90': round(r.ttft_p90, 2),
-                'ttft_p95': round(r.ttft_p95, 2) if r.ttft_p95 else None,
-                'ttft_p99': round(r.ttft_p99, 2) if r.ttft_p99 else None,
-                'e2e_latency_p90': round(r.e2e_latency_p90 * 1000, 1) if getattr(r, 'e2e_latency_p90', None) else None,
-                'itl_p90': round(r.itl_p90, 2) if r.itl_p90 else None,
-                'itl_p95': round(r.itl_p95, 2) if r.itl_p95 else None,
-                'itl_p99': round(r.itl_p99, 2) if r.itl_p99 else None,
-                'throughput_p50': round(r.throughput_p50, 2) if r.throughput_p50 else None,
-                'throughput_mean': round(r.throughput_mean, 2) if r.throughput_mean else None,
-                'throughput_p90': round(r.throughput_p90, 2),
-                'throughput_p95': round(r.throughput_p95, 2) if r.throughput_p95 else None,
-                'throughput_p99': round(r.throughput_p99, 2) if r.throughput_p99 else None,
+                'ttft_p50': _rounded(r.ttft_p50),
+                'ttft_p90': _rounded(r.ttft_p90),
+                'ttft_p95': _rounded(r.ttft_p95),
+                'ttft_p99': _rounded(r.ttft_p99),
+                'e2e_latency_p90': _rounded(r.e2e_latency_p90, 1, 1000),
+                'itl_p50': _rounded(r.itl_p50),
+                'itl_p90': _rounded(r.itl_p90),
+                'itl_p95': _rounded(r.itl_p95),
+                'itl_p99': _rounded(r.itl_p99),
+                'throughput_p50': _rounded(r.throughput_p50),
+                'throughput_mean': _rounded(r.throughput_mean),
+                'throughput_p90': _rounded(r.throughput_p90),
+                'throughput_p95': _rounded(r.throughput_p95),
+                'throughput_p99': _rounded(r.throughput_p99),
                 'gpus': r.total_gpus,
                 'efficiency': _rounded(r.throughput_p90 / r.total_gpus, 3) if r.total_gpus > 0 else None,
                 'output_tps_mean': self._get_output_tps(r),
@@ -2001,7 +2003,7 @@ class ReportAnalyzer:
                     'target_percentile': None,
                 }
 
-        return {
+        return attach_report_evidence({
             'charts': charts,
             'summary': stats,
             'all_results': all_results,
@@ -2014,4 +2016,4 @@ class ReportAnalyzer:
             'epp_tuning': epp_tuning_data,
             'concurrency_sweep': concurrency_sweep,
             'cache_sweep': cache_sweep,
-        }
+        }, results, run_id)

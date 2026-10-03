@@ -17,8 +17,12 @@ logger = logging.getLogger(__name__)
 
 def valid_metric(value, *, positive=False) -> bool:
     """Whether a measured metric is finite and in its nonnegative domain."""
-    return (isinstance(value, (int, float)) and not isinstance(value, bool)
-            and math.isfinite(value) and (value > 0 if positive else value >= 0))
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value) and (value > 0 if positive else value >= 0)
+    except OverflowError:
+        return False
 
 
 @dataclass
@@ -61,6 +65,7 @@ class TestResult:
     manifests_yaml: Optional[str]
     test_config_json: Optional[str] = None
     quality: str = 'ok'  # 'ok', 'warning', 'discard'
+    guidellm_raw_json: Optional[str] = None
 
     @property
     def throughput_mean(self) -> Optional[float]:
@@ -284,6 +289,10 @@ class ReportDataLoader:
                 quality = row['quality'] or 'ok'
             except (IndexError, KeyError):
                 quality = 'ok'
+            try:
+                guidellm_raw_json = row['guidellm_raw_json']
+            except (IndexError, KeyError):
+                guidellm_raw_json = None
 
             results.append(TestResult(
                 id=row['id'],
@@ -314,7 +323,8 @@ class ReportDataLoader:
                 metrics_json=row['metrics_json'],
                 manifests_yaml=manifests_yaml,
                 test_config_json=test_config_json,
-                quality=quality
+                quality=quality,
+                guidellm_raw_json=guidellm_raw_json
             ))
 
         return results

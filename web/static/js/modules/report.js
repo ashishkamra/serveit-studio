@@ -111,6 +111,7 @@ function addReportTab(runId) {
                 panel.innerHTML = '<div class="charts-loading">' + data.error + '</div>';
                 return;
             }
+            ServeItReportModel.assertSupported(data, runId);
             tabDataCache[tabId] = data;
             try {
                 renderChartsInPanel(data, runId, tabId);
@@ -133,6 +134,7 @@ function addReportTab(runId) {
 }
 
 function renderChartsInPanel(data, runId, tabId) {
+    delete _lastEstResults['-' + tabId];
     const panel = document.getElementById('panel-' + tabId);
     const origContent = document.getElementById('charts-content');
     _chartSuffix = '-' + tabId;
@@ -207,6 +209,9 @@ function estimatorAssumptionsHTML() {
         '<p>Pass requires finite measured TTFT and ITL at the selected percentiles within both targets. ' +
         'Missing, non-finite, negative or penalty latency (at least 1,000,000 ms) is Unknown; zero ITL is also Unknown (it may mean unavailable). ' +
         'An explicit zero TTFT is accepted. No percentile is substituted. ' +
+        'Versioned estimates require matching raw-source evidence for the selected latency percentiles; unknown historical provenance cannot verify Pass. ' +
+        'Versioned throughput sizing also requires a source-verified mean; a legacy alias remains diagnostic. ' +
+        'Legacy unversioned payloads retain numeric compatibility, not a source-provenance guarantee. ' +
         'Each source test is kept separately; names are not merged across conditions or runs. ' +
         'Calibration and discarded tests are excluded. Explicit ranking ineligibility remains diagnostic only, never Pass or Best. ' +
         'Recorded concurrency is not measured average concurrency; the latter is shown only when measurement evidence exists. ' +
@@ -237,18 +242,24 @@ function estimatorTargets(input) {
 }
 
 function estimatorLatencyMeets(value, target, isItl) {
-    if (!Number.isFinite(value) || value < 0 || value >= 1000000 || (isItl && value === 0) || !estimatorPositive(target)) return null;
-    return value <= target;
+    return ServeItReportModel.latencyMeets(value, target, isItl);
 }
 
 function estimatorOutcome(r) {
     // Recheck actual values rather than trusting cached booleans in any output path.
-    var ttft = estimatorLatencyMeets(r.ttft_val, r.ttft_target, false);
-    var itl = estimatorLatencyMeets(r.itl_val, r.itl_target, true);
-    var capacity = Number.isSafeInteger(r.total_gpus) && r.total_gpus > 0;
+    var ttft = ServeItReportModel.latencyMeets(r.ttft_val, r.ttft_target, false, r.evidence, 'ttft_' + r.ttft_pctl);
+    var itl = ServeItReportModel.latencyMeets(r.itl_val, r.itl_target, true, r.evidence, 'itl_' + r.itl_pctl);
+    var capacity = Number.isSafeInteger(r.total_gpus) && r.total_gpus > 0 && ServeItReportModel.capacityEvidenceVerified(r.evidence);
+    if (r.evidence !== undefined) {
+        var rate = ServeItReportModel.metricValue(r, 'throughput_mean');
+        var gpus = ServeItReportModel.deploymentGpus(r);
+        capacity = capacity && estimatorPositive(rate) && estimatorPositive(r.target_tput) && gpus != null &&
+            r.measured_tput === rate && r.gpus_per_replica === gpus &&
+            r.replicas === Math.max(1, Math.ceil(r.target_tput / rate)) && r.total_gpus === r.replicas * gpus;
+    }
     var invalidBase = r.base_ttft_p90 != null &&
         (!Number.isFinite(r.base_ttft_p90) || r.base_ttft_p90 < 0 || r.base_ttft_p90 >= 1000000);
-    var excluded = r.is_ranking_eligible === false || r.recommendation_eligible === false ||
+    var excluded = !ServeItReportModel.eligible(r) ||
         r.quality === 'discard' || invalidBase || /^step[23](?:-|$)/.test(String(r.test_id || ''));
     var status = excluded ? 'Excluded' : ttft === false || itl === false ? 'Fail' :
         (ttft === true && itl === true && capacity ? 'Pass' : 'Unknown');
@@ -257,7 +268,8 @@ function estimatorOutcome(r) {
         status: status, feasible: status === 'Pass',
         ttft: label(ttft), itl: label(itl),
         text: status + ' (TTFT ' + label(ttft) + '; ITL ' + label(itl) + (capacity ? '' : '; capacity Unknown') +
-            (excluded ? '; eligibility exclusion' : '') + ')',
+            (excluded ? '; eligibility exclusion' : '') +
+            (r.evidence !== undefined && (ttft == null || itl == null) ? '; source/metric evidence Unknown' : '') + ')',
     };
 }
 
@@ -268,9 +280,11 @@ function calculateEstimatorResults(allResults, input, runId) {
         var tid = String(r.test_id || '');
         if (r.quality === 'discard' || /^step[23](?:-|$)/.test(tid)) return;
         // Only absent means may use the legacy field; corrupt means must not be hidden.
-        var tput = r.throughput_mean == null ? r.throughput_p90 : r.throughput_mean;
+        var tput = r.evidence === undefined ? (r.throughput_mean == null ? r.throughput_p90 : r.throughput_mean) :
+            ServeItReportModel.metricValue(r, 'throughput_mean');
         var copies = estimatorPositive(tput) ? Math.max(1, Math.ceil(targets.target_tput / tput)) : null;
-        var total = copies != null && Number.isSafeInteger(r.gpus) && r.gpus > 0 ? copies * r.gpus : null;
+        var sourceGpus = r.evidence === undefined ? r.gpus : ServeItReportModel.deploymentGpus(r);
+        var total = copies != null && Number.isSafeInteger(sourceGpus) && sourceGpus > 0 ? copies * sourceGpus : null;
         if (!Number.isSafeInteger(copies) || !Number.isSafeInteger(total)) { copies = null; total = null; }
         var metrics = r.metrics_json || {};
         if (typeof metrics === 'string') {
@@ -284,14 +298,18 @@ function calculateEstimatorResults(allResults, input, runId) {
             run_id: r.run_id == null ? runId : r.run_id, source_index: index + 1,
             is_ranking_eligible: r.is_ranking_eligible, recommendation_eligible: r.recommendation_eligible,
             quality: r.quality,
+            evidence: r.evidence,
             base_ttft_p90: r.ttft_p90,
             architecture: String(r.architecture || 'UNKNOWN').toUpperCase(),
-            gpus_per_replica: r.gpus, replicas: copies, total_gpus: total,
+            gpus_per_replica: sourceGpus, replicas: copies, total_gpus: total,
             measured_tput: estimatorPositive(tput) ? tput : null,
-            throughput_source: r.throughput_mean == null ? 'legacy throughput_p90' : 'throughput_mean',
-            ttft_val: r['ttft_' + targets.ttft_pctl], itl_val: r['itl_' + targets.itl_pctl],
-            concurrency: r.concurrency,
-            measured_concurrency: r.actual_concurrency == null ? metrics.concurrency_mean : r.actual_concurrency,
+            throughput_source: r.evidence ? (r.evidence.metrics?.throughput_mean?.kind === 'compatibility' ? 'legacy throughput_p90' : 'throughput_mean') :
+                (r.throughput_mean == null ? 'legacy throughput_p90' : 'throughput_mean'),
+            ttft_val: r.evidence === undefined ? r['ttft_' + targets.ttft_pctl] : ServeItReportModel.metricValue(r, 'ttft_' + targets.ttft_pctl),
+            itl_val: r.evidence === undefined ? r['itl_' + targets.itl_pctl] : ServeItReportModel.metricValue(r, 'itl_' + targets.itl_pctl),
+            concurrency: r.evidence !== undefined ? ServeItReportModel.conditionValue(r, 'configured_concurrency') : r.concurrency,
+            measured_concurrency: r.evidence !== undefined ? ServeItReportModel.conditionValue(r, 'measured_mean_concurrency') :
+                (r.actual_concurrency == null ? metrics.concurrency_mean : r.actual_concurrency),
             cache_hit_pct: r.cache_hit_pct, prefix_cache_hit_pct: tc.prefix_cache_hit_pct,
             prefix_cache_mode: tc.prefix_cache_mode, prefix_cache_groups: tc.prefix_cache_groups,
             enable_prefix_caching: tc.enable_prefix_caching,
@@ -344,6 +362,7 @@ function runEstimator(suffix) {
     var tab = reportTabs.find(function(t) { return t.id === tabId; });
     var results;
     try {
+        ServeItReportModel.assertSupported(data, tab ? tab.runId : data.run_id);
         results = calculateEstimatorResults(data.all_results, input, tab ? tab.runId : data.run_id);
     } catch (e) {
         _lastEstResults[suffix] = [];
@@ -366,7 +385,7 @@ function estimatorResultsHTML(results) {
         ' ms ' + estimatorEscape(first.itl_pctl.toUpperCase()) + '</p>';
     if (bestGpus == null) t += '<p><strong>No verified feasible operating point.</strong> Failed, unknown and excluded points are shown for diagnostics, not recommendations.</p>';
     t += '<table class="estimator-table" style="margin-top:16px;"><thead><tr><th>Configuration / source</th><th>Arch</th>' +
-        '<th>Source conditions</th><th>GPUs / measured deployment</th><th>Measured req/s</th><th>Whole-deployment copies (estimated)</th>' +
+        '<th>Source conditions</th><th>GPUs / measured deployment</th><th>Reported req/s</th><th>Whole-deployment copies (estimated)</th>' +
         '<th>Total GPUs (estimated)</th><th>TTFT ' + estimatorEscape(first.ttft_pctl.toUpperCase()) + '</th><th>ITL ' +
         estimatorEscape(first.itl_pctl.toUpperCase()) + '</th><th>Measured target status</th></tr></thead><tbody>';
     results.forEach(function(r) {
