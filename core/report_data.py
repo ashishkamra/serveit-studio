@@ -66,6 +66,7 @@ class TestResult:
     test_config_json: Optional[str] = None
     quality: str = 'ok'  # 'ok', 'warning', 'discard'
     guidellm_raw_json: Optional[str] = None
+    guidellm_raw_lineage: Optional[str] = None
 
     @property
     def throughput_mean(self) -> Optional[float]:
@@ -293,6 +294,10 @@ class ReportDataLoader:
                 guidellm_raw_json = row['guidellm_raw_json']
             except (IndexError, KeyError):
                 guidellm_raw_json = None
+            try:
+                guidellm_raw_lineage = row['guidellm_raw_lineage']
+            except (IndexError, KeyError):
+                guidellm_raw_lineage = None
 
             results.append(TestResult(
                 id=row['id'],
@@ -324,7 +329,8 @@ class ReportDataLoader:
                 manifests_yaml=manifests_yaml,
                 test_config_json=test_config_json,
                 quality=quality,
-                guidellm_raw_json=guidellm_raw_json
+                guidellm_raw_json=guidellm_raw_json,
+                guidellm_raw_lineage=guidellm_raw_lineage
             ))
 
         return results

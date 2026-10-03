@@ -80,6 +80,7 @@ def _measurement(
 def build_test_evidence(result, run_id=None):
     metrics_json = _object(result.metrics_json)
     test_config = _object(result.test_config_json)
+    raw = getattr(result, "guidellm_raw_json", None)
     raw_benchmark = _source_benchmark(result)
     raw_metrics = _object(raw_benchmark.get("metrics"))
     metrics = {}
@@ -155,6 +156,10 @@ def build_test_evidence(result, run_id=None):
     return {
         "version": CONTRACT_VERSION,
         "source": {"run_id": run_id, "test_config_id": result.id, "test_id": result.config_name},
+        "raw_source": {
+            "stored": isinstance(raw, str) and bool(raw.strip()),
+            "lineage": getattr(result, "guidellm_raw_lineage", None) or "unrecorded",
+        },
         "recorded_timestamps": {
             "started_at": result.started_at,
             "completed_at": result.completed_at,

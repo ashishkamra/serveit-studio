@@ -2,32 +2,44 @@
 
 Snapshot date: **2026-10-01**.
 
-## Current continuation: shared evidence contract v1
+## Current continuation: raw-source retention with explicit lineage
 
-The artifact increment was committed/pushed to the confirmed fork feature branch
-as **`c821aad`**. The subsequent initial shared evidence-contract increment is
-implemented and validated, but remains **local and uncommitted**. Read
-[implementation record, Section 11](implementation-record.md#11-artifact-publication-and-shared-evidence-contract-v1)
+The shared evidence-contract increment was committed/pushed to the confirmed
+fork feature branch as **`f4d00d3`**. The recorded next step is now implemented
+and validated, but remains **local and uncommitted**: newly completed benchmarks
+persist their raw source in `guidellm_raw_json` (verbatim parsed bytes) plus a new
+explicit `guidellm_raw_lineage` column — `guidellm_output_file` for guidellm's own
+output, `reconstituted_parse_guidellm` for the locally reconstituted
+`parse_guidellm` extraction, assigned only where the source is known. Evidence
+carries a `raw_source` block (`stored`, `lineage`; absent lineage is
+`unrecorded`, never inferred). The browser payload never embeds the raw artifact.
+Read [implementation record, Section 12](implementation-record.md#12-raw-source-retention-with-explicit-lineage)
 and [the contract](report-evidence-contract.md) before using older snapshots below.
 
-Current checks: **231 full-suite tests**, **156 alternate-order checks**, **84 Node
+Current checks: **240 full-suite tests**, **165 alternate-order checks**, **84 Node
 cases**, and real desktop/narrow Chrome fixture checks all pass. Ruff, production
 JS syntax, authenticated page/asset ordering, and whitespace checks pass. The
 existing gevent SSL warning remains; no real workload or data migration occurred.
 
+Do not claim lineage is authentication, measurement-window certification, or
+workload comparability. **Remaining P0.2 steps:** backed-up, opt-in historical
+audit/repair; baseline matching; uniform SLO-aware recommendation selection;
+remaining legacy chart semantics; trial identities; Python HTML/Markdown evidence
+migration. Historical absence must stay unknown, not be certified. Do not silently
+reparse/overwrite history on report reads. Do not call the whole redesign, all
+P0.2, or every Python/legacy chart pipeline complete. Review the current local
+increment before further publication.
+
+## Previous continuation: shared evidence contract v1
+
+The artifact increment was committed/pushed to the confirmed fork feature branch
+as **`c821aad`**, and the initial shared evidence-contract increment was then
+committed/pushed as **`f4d00d3`**. Superseded by the continuation above.
+
 `core/report_evidence.py` supplies `serveit.report` v1 and same-test typed evidence;
 `report-model.js` supplies one policy embedded in live/browser-export paths.
 Unknown/mismatched source provenance cannot verify a versioned estimate. Legacy
-unversioned payloads remain numerically compatible with explicit caveats. Do not
-call the whole redesign, all P0.2, or every Python/legacy chart pipeline complete.
-
-**Next incomplete step:** preserve new source artifacts with explicit lineage.
-The current `DatabaseManager.insert_test_result` path does not populate the
-existing `guidellm_raw_json` column. Historical absence must stay unknown, not be
-certified by the new reader. Plan backed-up, opt-in audit/repair afterwards; do not
-silently reparse/overwrite history on report reads. Numerical agreement with
-GUIDELLM-shaped input is not file authentication or verified workload/window
-comparability. Review the current local increment before further publication.
+unversioned payloads remain numerically compatible with explicit caveats.
 
 ## Latest continuation: publication and P0.2 artifact identity
 

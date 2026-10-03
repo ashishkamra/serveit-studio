@@ -1,3 +1,4 @@
+# fmt: off
 """TestOrchestrator — main test runner and infrastructure management."""
 
 import os
@@ -1547,12 +1548,12 @@ class TestOrchestrator(ParserMixin, GuidellmMixin):
 
                     use_job = os.environ.get('GUIDELLM_USE_JOB', 'true').lower() == 'true'
                     if use_job:
-                        guidellm_success, guidellm_output, metrics_output = self._run_guidellm_job(
+                        guidellm_success, guidellm_output, metrics_output, raw_lineage = self._run_guidellm_job(
                             endpoint, config, log_callback=log_callback,
                             stop_check=stop_check,
                         )
                     else:
-                        guidellm_success, guidellm_output, metrics_output = self._run_guidellm_test(
+                        guidellm_success, guidellm_output, metrics_output, raw_lineage = self._run_guidellm_test(
                             endpoint, config, log_callback=log_callback,
                         )
 
@@ -1560,6 +1561,7 @@ class TestOrchestrator(ParserMixin, GuidellmMixin):
                     result.guidellm_success = guidellm_success
                     result.guidellm_output = guidellm_output
                     result.metrics_output = metrics_output
+                    result.guidellm_raw_lineage = raw_lineage
 
                     if guidellm_success and guidellm_output:
                         self._parse_guidellm_results(guidellm_output, result)

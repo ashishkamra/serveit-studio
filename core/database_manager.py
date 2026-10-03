@@ -1,3 +1,4 @@
+# fmt: off
 """
 Database manager for ServeIt Studio optimization results.
 Provides immediate persistence of test results to SQLite database.
@@ -121,6 +122,7 @@ class DatabaseManager:
                     architecture TEXT,
                     decode_tp INTEGER,
                     guidellm_raw_json TEXT,
+                    guidellm_raw_lineage TEXT,
                     FOREIGN KEY (run_id) REFERENCES optimization_runs (id),
                     UNIQUE(run_id, config_name)
                 )
@@ -152,6 +154,7 @@ class DatabaseManager:
                 ('test_configurations', 'decode_tp', 'INTEGER'),
                 ('test_configurations', 'guidellm_raw_json', 'TEXT'),
                 ('test_configurations', 'test_config_json', 'TEXT'),
+                ('test_configurations', 'guidellm_raw_lineage', 'TEXT'),
             ]
             for table, col, col_type in _migrations:
                 try:
@@ -598,8 +601,9 @@ class DatabaseManager:
                  itl_p50, itl_p90, itl_p95, itl_p99,
                  throughput_p50, throughput_p90, throughput_p95, throughput_p99,
                  gpu_utilization, kv_cache_usage, started_at, completed_at, metrics_json,
-                 manifests_yaml, architecture, decode_tp, test_config_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 manifests_yaml, architecture, decode_tp, test_config_json,
+                 guidellm_raw_json, guidellm_raw_lineage)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 run_id,
                 test_config.test_id,
@@ -628,6 +632,8 @@ class DatabaseManager:
                 architecture,
                 getattr(test_config, 'decode_tp', None),
                 test_config_json,
+                getattr(test_result, 'guidellm_raw_json', None),
+                getattr(test_result, 'guidellm_raw_lineage', None),
             ))
 
     def update_run_status(

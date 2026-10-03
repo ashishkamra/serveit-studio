@@ -2,10 +2,11 @@
 
 Snapshot date: **2026-10-01**.
 
-**Current status: P0.1 and P0.2 artifact increments published; initial shared
-evidence contract v1 implemented and validated locally; broader redesign remains
-unfinished.** See **Section 11** for current validation and the next source-retention
-step. Sections 9–10 preserve preceding integration/publication snapshots.
+**Current status: P0.1 published; P0.2 artifacts and shared evidence contract v1
+published; raw-source retention with explicit lineage implemented and validated
+locally; broader redesign remains unfinished.** See **Section 12** for current
+validation. Section 11 records the contract increment; Sections 9–10 preserve
+preceding integration/publication snapshots.
 Sections 1–8 preserve the original checkpoint inventory and limitations; their
 validation counts and resolved mismatch notes are historical, not current.
 
@@ -497,9 +498,65 @@ by a backed-up, opt-in historical audit/repair flow—not silently rewriting rec
 on read. No source file, stored metrics, cluster resource, or production dependency
 was changed by this read-only contract work.
 
-This contract increment remains **local and uncommitted** after the requested
-artifact checkpoint push. Broader P0.2 remains incomplete: baseline matching,
-uniform SLO-aware recommendation selection, remaining legacy chart semantics,
-trial identities, and Python HTML/Markdown evidence migration. P1/P2/P3 layouts,
-guided recovery, and accessibility remain planned. Node 20, hosted CI, real
-clusters and assistive-technology certification were not exercised.
+This contract increment was committed and pushed to the confirmed fork feature
+branch as **`f4d00d3`** after its validation. Broader P0.2 remains incomplete:
+baseline matching, uniform SLO-aware recommendation selection, remaining legacy
+chart semantics, trial identities, and Python HTML/Markdown evidence migration.
+P1/P2/P3 layouts, guided recovery, and accessibility remain planned. Node 20,
+hosted CI, real clusters and assistive-technology certification were not
+exercised.
+
+## 12. Raw-source retention with explicit lineage
+
+The next P0.2 step from Section 11 is now implemented: newly completed
+benchmarks persist their raw source artifact **with explicit lineage**, and the
+report evidence states that lineage instead of implying it.
+
+- `DatabaseManager.insert_test_result` now writes the existing
+  `guidellm_raw_json` column (verbatim parsed bytes) plus a new
+  `guidellm_raw_lineage` TEXT column (schema and legacy-DB migration).
+  `web/database.py` migrates the same column.
+- `core/orchestrator/result.py` records `guidellm_raw_lineage` on the
+  orchestrator result; the benchmark producers return it as the fourth tuple
+  value: `_run_guidellm_job` returns `guidellm_output_file` for guidellm's own
+  output file and `reconstituted_parse_guidellm` for the locally reconstituted
+  `parse_guidellm` extraction; `_run_guidellm_test` returns `guidellm_output_file`.
+  Failure paths return a null lineage. Both callers (runner and the legacy
+  web validation path) consume all four values.
+- `ParserMixin._parse_guidellm_results` keeps storing the exact parsed bytes and
+  does not infer lineage; a parsed artifact without a producer-assigned lineage
+  is reported `unrecorded`, never certified.
+- `ReportDataLoader` reads the optional lineage column (old schemas work), and
+  `build_test_evidence` adds a `raw_source` block: `stored` (raw artifact
+  present) and `lineage` (`guidellm_output_file`,
+  `reconstituted_parse_guidellm`, or `unrecorded`).
+- The raw artifact never enters the browser report payload; only the same-test
+  evidence descriptors reference it.
+- `# fmt: off` guards were added to the legacy modules this increment edited
+  (`core/orchestrator/result.py`, `core/orchestrator/guidellm.py`,
+  `core/orchestrator/runner.py`, `core/database_manager.py`, `web/optimization.py`,
+  `web/database.py`) to prevent unrelated whole-file formatting churn.
+
+Historical rows are unchanged: no raw reference remains `unknown`; raw without a
+lineage record is stored but `unrecorded`. Nothing is backfilled or rewritten on
+read, and a backed-up, opt-in historical audit/repair flow remains the next
+P0.2 tranche. The new `tests/test_report_lineage.py` covers parser byte
+identity, persistence of both columns, loader/evidence lineage propagation,
+legacy-schema behavior, payload raw-artifact exclusion, and the four-value
+producer contract.
+
+### Validation and findings
+
+| Check | Result |
+| --- | --- |
+| Full isolated Python 3.11.15 suite | **240 passed, 0 skipped**, existing gevent SSL warning |
+| Imports → API → evidence → lineage → contract → artifacts → safety, fresh process | **165 passed, 0 skipped**, same warning |
+| Direct model/recommendation/estimator Node suites | **84 passed, 0 failed/skipped** |
+| Chrome 1440px / 390px fixture checks | Passed |
+| Whole-repository Ruff, production JS syntax checks, whitespace | Passed |
+
+Lineage is not authentication: it identifies where the preserved artifact came
+from, not whether the file is genuine, the window it covers, or workload
+comparability. An actual cluster benchmark was not run; the persistence path was
+exercised with real parser/database/loader/report code against temporary
+databases only.

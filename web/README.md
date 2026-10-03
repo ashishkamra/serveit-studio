@@ -86,7 +86,7 @@ Key columns: `run_name`, `model`, `isl`, `osl`, `num_users`, `status`, `goal`, `
 ### test_configurations
 Stores per-test results and metrics.
 
-Key columns: `config_name`, `architecture`, `tensor_parallelism`, `decode_tp`, `ttft_p50/p90/p95/p99`, `itl_p50/p90/p95/p99`, `throughput_p50/p90/p95/p99`, `metrics_json`, `manifests_yaml`, `test_config_json`, `guidellm_raw_json`
+Key columns: `config_name`, `architecture`, `tensor_parallelism`, `decode_tp`, `ttft_p50/p90/p95/p99`, `itl_p50/p90/p95/p99`, `throughput_p50/p90/p95/p99`, `metrics_json`, `manifests_yaml`, `test_config_json`, `guidellm_raw_json`, `guidellm_raw_lineage` (explicit provenance of the preserved raw artifact: `guidellm_output_file`, `reconstituted_parse_guidellm`, or null/unrecorded)
 
 ### console_logs
 Real-time console output, persisted across server restarts.

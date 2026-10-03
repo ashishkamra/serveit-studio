@@ -1,3 +1,4 @@
+# fmt: off
 """
 ServeIt Studio Test Orchestrator
 
@@ -16,6 +17,11 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Lineage of the stored guidellm_raw_json artifact. Recorded explicitly at the
+# point where the source is known; never inferred from the data itself.
+RAW_SOURCE_LINEAGE_OUTPUT_FILE = 'guidellm_output_file'
+RAW_SOURCE_LINEAGE_RECONSTITUTED = 'reconstituted_parse_guidellm'
 
 
 @dataclass
@@ -57,6 +63,7 @@ class TestResult:
 
     # Extended guidellm metrics
     guidellm_raw_json: Optional[str] = None
+    guidellm_raw_lineage: Optional[str] = None
 
     # Request counts
     request_total: Optional[int] = None
@@ -133,5 +140,3 @@ class TestResult:
 
     # Prefix cache hit rate (from Prometheus metrics)
     cache_hit_pct: Optional[float] = None
-
-

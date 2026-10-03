@@ -1,3 +1,4 @@
+# fmt: off
 """Optimization runner — log_to_ui, run_optimization_background, deploy_and_test."""
 
 import os
@@ -1842,7 +1843,7 @@ data:
                     )
 
                     # Run guidellm test with Istio gateway discovery, pod monitoring, and metrics collection
-                    benchmark_success, result_file, metrics_file = test_orchestrator._run_guidellm_test(
+                    benchmark_success, result_file, metrics_file, raw_lineage = test_orchestrator._run_guidellm_test(
                         endpoint=None,  # Auto-discover Istio gateway
                         config=test_config,
                         log_callback=log_to_ui,
@@ -1855,6 +1856,8 @@ data:
                     test_result.guidellm_success = benchmark_success
                     if metrics_file:
                         test_result.metrics_collected = True
+                    if raw_lineage:
+                        test_result.guidellm_raw_lineage = raw_lineage
 
                     if benchmark_success and result_file:
                         log_to_ui(f'   Results saved to: {result_file}', 'info')
@@ -2119,4 +2122,3 @@ data:
                 print(f"Warning: Failed to update optimization state in database: {e}")
 
         socketio.emit('status_update', {'running': False, 'message': 'Optimization finished'})
-

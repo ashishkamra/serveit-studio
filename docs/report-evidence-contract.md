@@ -49,6 +49,8 @@ the identity for attaching evidence.
 | `source.run_id` | Source optimization run |
 | `source.test_config_id` | Immutable database test primary key |
 | `source.test_id` | Legacy stored configuration identifier, not a display name |
+| `raw_source.stored` | Whether a preserved raw GUIDELLM-shaped artifact exists for this record |
+| `raw_source.lineage` | Explicit capture lineage: `guidellm_output_file` (guidellm's own output), `reconstituted_parse_guidellm` (reconstituted from `parse_guidellm` extraction), or `unrecorded` when preserved without a lineage record; never inferred |
 | `recorded_timestamps` | Database-record timestamps; **not** a certified benchmark collection window |
 | `resources.architecture` | Architecture recorded for this source |
 | `resources.total_gpus` | Whole-deployment GPU count **calculated** from deployment topology |
@@ -118,13 +120,28 @@ does **not** authenticate that file, establish original-versus-reconstituted
 lineage, certify measurement-window/workload comparability, or prove production
 capacity. Those require stronger capture/provenance and experiment design.
 
-**Known persistence limitation:** the current `DatabaseManager.insert_test_result`
-path does not populate the existing raw-JSON column. This increment does not
-change ingestion or backfill it. Many current/historical records will remain
-unknown, and versioned sizing may show no source-verified feasible point.
-Preserving new source artifacts with explicit lineage and a backed-up, opt-in
-historical audit/repair flow is the next P0.2 tranche. Never silently rewrite old
-stored P99 values while generating a report.
+## Source retention and lineage
+
+`DatabaseManager.insert_test_result` now persists the parsed raw artifact verbatim
+in `guidellm_raw_json` together with `guidellm_raw_lineage`, the new TEXT column
+added by schema migration. Lineage is assigned only where the source is known:
+guidellm's own output file yields `guidellm_output_file`; the locally
+reconstituted `parse_guidellm` extraction yields
+`reconstituted_parse_guidellm`. The parser stores the exact parsed bytes and does
+not assign lineage; absent lineage is `unrecorded`, not certified.
+
+Lineage is **not** authentication. Even `guidellm_output_file` does not prove file
+authenticity, collection-window, or workload comparability. Historical rows keep
+their previous behavior: no raw reference means `unknown`; raw-without-lineage
+means stored but `unrecorded`. Nothing is backfilled or rewritten on read.
+
+Because historical persisted records mostly lack raw evidence, versioned sizing may
+legitimately report no source-verified feasible point. A backed-up, opt-in
+historical audit/repair flow remains a pending P0.2 tranche. Never silently
+rewrite old stored P99 values while generating a report.
+
+The browser report payload never embeds the raw artifact; only the same-test
+evidence descriptors above reference it.
 
 ## Shared consumer and sizing policy
 

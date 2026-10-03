@@ -1,3 +1,4 @@
+# fmt: off
 """Database initialization, state persistence, and deployment template storage."""
 
 import os
@@ -293,6 +294,11 @@ def init_db():
 
     try:
         cursor.execute('ALTER TABLE test_configurations ADD COLUMN test_config_json TEXT')
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute('ALTER TABLE test_configurations ADD COLUMN guidellm_raw_lineage TEXT')
     except sqlite3.OperationalError:
         pass
 

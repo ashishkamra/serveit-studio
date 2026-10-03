@@ -1,3 +1,4 @@
+# fmt: off
 """Guidellm execution — persistent pod management and benchmark running."""
 
 import os
@@ -9,6 +10,10 @@ from pathlib import Path
 from typing import Optional, Callable
 
 from core.config_generator import TestConfig
+from core.orchestrator.result import (
+    RAW_SOURCE_LINEAGE_OUTPUT_FILE,
+    RAW_SOURCE_LINEAGE_RECONSTITUTED,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,17 +151,18 @@ class GuidellmMixin:
         expected_pod_count: int = 0,
         collect_metrics: bool = True,
         stop_check: Optional[Callable[[], bool]] = None,
-    ) -> tuple[bool, Optional[str], Optional[str]]:
+    ) -> tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """Run guidellm via kubectl exec on the persistent guidellm pod.
 
         Same interface as _run_guidellm_test. The persistent pod is deployed
         once at optimization start and reused for all tests.
+        Returns (success, result_file, metrics_path, raw_source_lineage).
         """
         kubectl = self.deployment_manager.kubectl
 
         # Ensure guidellm pod is running
         if not self.ensure_guidellm_pod(config, log_callback):
-            return False, None, None
+            return False, None, None, None
 
         if endpoint is None:
             endpoint = self._discover_istio_gateway(
@@ -336,9 +342,9 @@ class GuidellmMixin:
                     subprocess.run(
                         ['kubectl', 'exec', self._guidellm_pod_name,
                          '-n', self.namespace, '--', 'pkill', '-f', 'guidellm run'],
-                        capture_output=True, timeout=10, check=False, env=env
+                         capture_output=True, timeout=10, check=False, env=env
                     )
-                    return False, None, None
+                    return False, None, None, None
 
                 if process.poll() is not None:
                     if process.returncode == 0:
@@ -418,10 +424,11 @@ class GuidellmMixin:
                         if log_callback:
                             log_callback('   Using local results file')
                         result_file = str(local_path)
+                        raw_lineage = RAW_SOURCE_LINEAGE_OUTPUT_FILE
                     else:
                         if log_callback:
                             log_callback(f'   ❌ Failed to extract results: {extract_result.stderr[:100]}')
-                        return False, None, None
+                        return False, None, None, None
                 else:
                     # Write extracted metrics to local temp file for the parser
                     import json as _json
@@ -436,7 +443,7 @@ class GuidellmMixin:
                         if 'error' in extracted:
                             if log_callback:
                                 log_callback(f'   ❌ Parse error: {extracted["error"]}')
-                            return False, None, None
+                            return False, None, None, None
 
                         # Reconstruct the benchmarks format the parser expects
                         # parse_guidellm flattens percentiles — nest them back
@@ -473,13 +480,14 @@ class GuidellmMixin:
                         }
                         with open(result_file, 'w') as rf:
                             _json.dump(reconstituted, rf)
+                        raw_lineage = RAW_SOURCE_LINEAGE_RECONSTITUTED
 
                         if log_callback:
                             log_callback(f'   ✅ Results extracted ({config.test_id})')
                     except Exception as parse_err:
                         if log_callback:
                             log_callback(f'   ❌ Failed to process extracted results: {str(parse_err)[:100]}')
-                        return False, None, None
+                        return False, None, None, None
 
                 # Collect Prometheus metrics if configured
                 metrics_path = None
@@ -500,14 +508,14 @@ class GuidellmMixin:
                         if log_callback:
                             log_callback(f'   ⚠️  Metrics collection failed: {str(e)[:100]}')
 
-                return True, result_file, metrics_path
+                return True, result_file, metrics_path, raw_lineage
 
-            return False, None, None
+            return False, None, None, None
 
         except Exception as e:
             if log_callback:
                 log_callback(f'❌ Guidellm exec failed: {str(e)[:200]}')
-            return False, None, None
+            return False, None, None, None
 
     def _run_guidellm_test(
         self,
@@ -517,7 +525,7 @@ class GuidellmMixin:
         monitor_pods: bool = False,
         expected_pod_count: int = 0,
         collect_metrics: bool = True
-    ) -> tuple[bool, Optional[str], Optional[str]]:
+    ) -> tuple[bool, Optional[str], Optional[str], Optional[str]]:
         """
         Run guidellm load test with optional pod crash monitoring and metrics collection.
 
@@ -536,7 +544,9 @@ class GuidellmMixin:
                      Falls back to /tmp/huggingface_cache if mount unavailable
 
         Returns:
-            Tuple of (success, guidellm_output_file_path, metrics_file_path)
+            Tuple of (success, guidellm_output_file_path, metrics_file_path,
+            raw_source_lineage). The lineage is always RAW_SOURCE_LINEAGE_OUTPUT_FILE
+            for a successful test because the file is guidellm's own output.
         """
         try:
             if log_callback:
@@ -840,16 +850,15 @@ class GuidellmMixin:
                     if log_callback:
                         log_callback('⚠️  Metrics collection requested but Thanos URL not configured')
 
-                return True, str(result_file), metrics_file
+                return True, str(result_file), metrics_file, RAW_SOURCE_LINEAGE_OUTPUT_FILE
             else:
                 if log_callback:
                     log_callback(f'❌ Benchmark failed: {error_message or "unknown error"}')
-                return False, None, None
+                return False, None, None, None
 
         except Exception as e:
             error_msg = f"Failed to run guidellm test: {e}"
             logger.error(error_msg)
             if log_callback:
                 log_callback(f"❌ {error_msg}")
-            return False, None, None
-
+            return False, None, None, None
