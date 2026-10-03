@@ -508,9 +508,10 @@ exercised.
 
 ## 12. Raw-source retention with explicit lineage
 
-The next P0.2 step from Section 11 is now implemented: newly completed
-benchmarks persist their raw source artifact **with explicit lineage**, and the
-report evidence states that lineage instead of implying it.
+Committed and pushed to the confirmed fork feature branch as
+**`783f923`**. The next P0.2 step from Section 11 is now implemented: newly
+completed benchmarks persist their raw source artifact **with explicit lineage**,
+and the report evidence states that lineage instead of implying it.
 
 - `DatabaseManager.insert_test_result` now writes the existing
   `guidellm_raw_json` column (verbatim parsed bytes) plus a new

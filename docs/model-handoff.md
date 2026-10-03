@@ -5,8 +5,9 @@ Snapshot date: **2026-10-01**.
 ## Current continuation: raw-source retention with explicit lineage
 
 The shared evidence-contract increment was committed/pushed to the confirmed
-fork feature branch as **`f4d00d3`**. The recorded next step is now implemented
-and validated, but remains **local and uncommitted**: newly completed benchmarks
+fork feature branch as **`f4d00d3`**, and the retention/lineage increment was
+then committed/pushed as **`783f923`** (current branch HEAD). That increment:
+newly completed benchmarks
 persist their raw source in `guidellm_raw_json` (verbatim parsed bytes) plus a new
 explicit `guidellm_raw_lineage` column — `guidellm_output_file` for guidellm's own
 output, `reconstituted_parse_guidellm` for the locally reconstituted
@@ -27,8 +28,8 @@ audit/repair; baseline matching; uniform SLO-aware recommendation selection;
 remaining legacy chart semantics; trial identities; Python HTML/Markdown evidence
 migration. Historical absence must stay unknown, not be certified. Do not silently
 reparse/overwrite history on report reads. Do not call the whole redesign, all
-P0.2, or every Python/legacy chart pipeline complete. Review the current local
-increment before further publication.
+P0.2, or every Python/legacy chart pipeline complete. The next local increment
+(historical audit/repair) should be reviewed before further publication.
 
 ## Previous continuation: shared evidence contract v1
 
