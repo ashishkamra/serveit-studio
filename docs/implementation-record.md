@@ -565,7 +565,9 @@ databases only.
 
 ## 13. Opt-in historical raw-source audit and repair
 
-The next P0.2 step from Section 12 is now implemented: a **read-only audit**
+Committed and pushed to the confirmed fork feature branch as
+**`ec7720f`**. The next P0.2 step from Section 12 is now implemented: a
+**read-only audit**
 plus a **backup-gated, explicit opt-in repair** for stored percentile values,
 exposed through the CLI as `serveit report audit` and `serveit report repair`.
 

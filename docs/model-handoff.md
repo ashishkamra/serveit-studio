@@ -5,9 +5,9 @@ Snapshot date: **2026-10-01**.
 ## Current continuation: historical raw-source audit and repair
 
 The retention/lineage increment was committed/pushed as **`783f923`** (recorded in
-the continuation below). The next P0.2 step is now implemented and validated, but
-remains **local and uncommitted**: `core/report_audit.py` plus a
-`serveit report` CLI command. Audit is read-only; repair is a dry run by default
+the continuation below), and the audit/repair increment was then
+committed/pushed as **`ec7720f`** (current branch HEAD): `core/report_audit.py`
+plus a `serveit report` CLI command. Audit is read-only; repair is a dry run by default
 and, when explicitly applied, first backs up the database file (verified with
 `PRAGMA integrity_check`) and logs every exact-agreement change in the additive
 `raw_source_repairs` table. Rows without a preserved raw reference are never
@@ -21,8 +21,7 @@ reference. Remaining P0.2 steps: matched baselines/workload comparability and
 baseline IDs at experiment time; uniform SLO-aware recommendation selection;
 remaining legacy chart semantics; trial identities; Python HTML/Markdown evidence
 migration. Do not call the whole redesign, all P0.2, or every Python/legacy
-chart pipeline complete. Review the current local increment before further
-publication.
+chart pipeline complete.
 
 ## Previous continuation: raw-source retention with explicit lineage
 
